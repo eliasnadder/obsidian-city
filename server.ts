@@ -12,6 +12,8 @@ import cors from "cors";
 import * as path from "path";
 import * as fs from "fs";
 import chokidar from "chokidar";
+import swaggerUi from "swagger-ui-express";
+import { swaggerSpec } from "./swagger";
 
 // Config validation
 import { initConfig } from "./config";
@@ -60,9 +62,31 @@ app.use(express.static(path.join(__dirname, "public")));
 // ── API ROUTES ─────────────────────────────────────────────────────────────────
 app.use("/api/vault", vaultRouter);
 
+// ── SWAGGER DOCS ─────────────────────────────────────────────────────────────
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.get("/api/swagger.json", (req: Request, res: Response) => {
+  res.json(swaggerSpec);
+});
+
 // ── HEALTH CHECK (enhanced) ───────────────────────────────────────────────────
 const startTime = Date.now();
 
+/**
+ * @swagger
+ * /api/health:
+ *   get:
+ *     summary: Health check endpoint
+ *     description: Returns server health status, uptime, and memory usage
+ *     tags: [Health]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Server is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthResponse'
+ */
 app.get("/api/health", (req: Request, res: Response) => {
   const memUsage = process.memoryUsage();
   

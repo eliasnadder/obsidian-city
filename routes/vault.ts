@@ -1,7 +1,12 @@
 /**
  * ObsidianCity3D — Vault Parser API v2
  * Route: /api/vault
- * Features: Search, Caching, Input Validation
+ * Features: Search, Caching, Input Validation, Pagination
+ * 
+ * @swagger
+ * tags:
+ *   - name: Vault
+ *     description: Vault operations and data retrieval
  */
 
 import express, { Router, Request, Response } from "express";
@@ -643,6 +648,35 @@ function getVaultData(): VaultData {
 
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /api/vault:
+ *   get:
+ *     summary: Get vault data for 3D city visualization
+ *     description: Returns the entire vault parsed into a city structure with positions and connections
+ *     tags: [Vault]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Vault data for 3D rendering
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 meta:
+ *                   type: object
+ *                 cities:
+ *                   type: array
+ *                 connections:
+ *                   type: array
+ *                 highwayConnections:
+ *                   type: array
+ *       404:
+ *         description: Vault path not found
+ *       500:
+ *         description: Server error
+ */
 router.get("/", (req: Request, res: Response) => {
   if (!fs.existsSync(VAULT_PATH))
     return res.status(404).json({
@@ -701,6 +735,55 @@ router.get("/", (req: Request, res: Response) => {
 
 // ── SEARCH ENDPOINT (NEW) ────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /api/vault/search:
+ *   get:
+ *     summary: Search notes in vault
+ *     description: Full-text fuzzy search across all notes with pagination support
+ *     tags: [Vault]
+ *     security: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search query
+ *       - in: query
+ *         name: folder
+ *         schema:
+ *           type: string
+ *         description: Filter by folder path
+ *       - in: query
+ *         name: tags
+ *         schema:
+ *           type: string
+ *         description: Comma-separated tags to filter
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *         description: Max results to return
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *         description: Number of results to skip
+ *     responses:
+ *       200:
+ *         description: Search results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SearchResponse'
+ *       400:
+ *         description: Invalid parameters
+ *       404:
+ *         description: Vault not found
+ */
 router.get("/search", (req: Request, res: Response) => {
   const { error, value } = schemas.search.validate(req.query);
   
@@ -737,6 +820,27 @@ router.get("/search", (req: Request, res: Response) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/vault/note/{id}:
+ *   get:
+ *     summary: Get a single note by ID
+ *     description: Returns the full content of a note by its ID
+ *     tags: [Vault]
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Note ID (filename without extension)
+ *     responses:
+ *       200:
+ *         description: Note content
+ *       404:
+ *         description: Note not found
+ */
 router.get("/note/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   
@@ -785,6 +889,24 @@ router.get("/note/:id", (req: Request, res: Response) => {
 });
 
 router.get("/stats", (req: Request, res: Response) => {
+  /**
+   * @swagger
+   * /api/vault/stats:
+   *   get:
+   *     summary: Get vault statistics
+   *     description: Returns aggregated statistics about the vault
+   *     tags: [Vault]
+   *     security: []
+   *     responses:
+   *       200:
+   *         description: Vault statistics
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Stats'
+   *       404:
+   *         description: Vault not found
+   */
   // Try cache first
   const cached = cache.get(CACHE_KEYS.STATS);
   if (cached) {
@@ -836,6 +958,31 @@ interface FolderInfo {
 }
 
 router.get("/folders", (req: Request, res: Response) => {
+  /**
+   * @swagger
+   * /api/vault/folders:
+   *   get:
+   *     summary: Get list of all folders in vault
+   *     description: Returns a flat list of all folders with pagination support
+   *     tags: [Vault]
+   *     security: []
+   *     parameters:
+   *       - in: query
+   *         name: page
+ *         schema:
+   *           type: integer
+ *           default: 1
+   *       - in: query
+   *         name: limit
+   *         schema:
+   *           type: integer
+   *           default: 100
+   *     responses:
+   *       200:
+   *         description: List of folders
+   *       404:
+   *         description: Vault not found
+   */
   const cached = cache.get<{ folders: FolderInfo[]; count: number }>(CACHE_KEYS.FOLDERS);
   if (cached) {
     return res.json({ ...cached, cached: true });
