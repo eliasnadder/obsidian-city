@@ -158,11 +158,22 @@ describe("Vault Parser API", () => {
 
 describe("Input Validation", () => {
   let app: Express;
+  const VALID_VAULT = path.join(os.tmpdir(), "test-obsidian-vault-valid");
 
   beforeAll(() => {
+    // Create a fresh vault for this test suite
+    createTestVault();
+    
     app = express();
     app.use(express.json());
     app.use("/api/vault", vaultRouter);
+  });
+
+  afterAll(() => {
+    // Clean up test vault
+    if (fs.existsSync(VALID_VAULT)) {
+      fs.rmSync(VALID_VAULT, { recursive: true, force: true });
+    }
   });
 
   describe("Search validation", () => {
@@ -181,7 +192,7 @@ describe("Input Validation", () => {
 
     it("should accept valid limit and offset", async () => {
       const response = await request(app).get(
-        "/api/vault/search?q=test&limit=50&offset=100"
+        "/api/vault/search?q=Note&limit=50&offset=0"
       );
 
       expect(response.status).toBe(200);
