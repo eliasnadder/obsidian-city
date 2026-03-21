@@ -14,6 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 import Joi from "joi";
 import NodeCache from "node-cache";
+import { authMiddleware, isJwtEnabled } from "../auth";
 
 const router: Router = express.Router();
 
@@ -1030,7 +1031,37 @@ router.get("/folders", (req: Request, res: Response) => {
 
 // ── CREATE NOTE (with validation) ───────────────────────────────────────────
 
-router.post("/note", (req: Request, res: Response) => {
+/**
+ * @swagger
+ * /api/vault/note:
+ *   post:
+ *     summary: Create a new note
+ *     description: Creates a new markdown note in the vault
+ *     tags: [Vault]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               folder:
+ *                 type: string
+ *               content:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Note created successfully
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Unauthorized (if JWT enabled)
+ */
+router.post("/note", authMiddleware, (req: Request, res: Response) => {
   const { error, value } = schemas.createNote.validate(req.body);
   
   if (error) {
@@ -1085,7 +1116,22 @@ router.post("/note", (req: Request, res: Response) => {
 
 // ── CACHE MANAGEMENT ENDPOINTS ───────────────────────────────────────────────
 
-router.post("/cache/clear", (req: Request, res: Response) => {
+/**
+ * @swagger
+ * /api/vault/cache/clear:
+ *   post:
+ *     summary: Clear the cache
+ *     description: Invalidates all cached vault data
+ *     tags: [Vault]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cache cleared
+ *       401:
+ *         description: Unauthorized (if JWT enabled)
+ */
+router.post("/cache/clear", authMiddleware, (req: Request, res: Response) => {
   invalidateCache();
   res.json({ success: true, message: "Cache cleared" });
 });

@@ -14,6 +14,7 @@ import * as fs from "fs";
 import chokidar from "chokidar";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./swagger";
+import { authMiddleware, initJwt, generateToken, isJwtEnabled } from "./auth";
 
 // Config validation
 import { initConfig } from "./config";
@@ -49,8 +50,22 @@ const wss = new WebSocket.Server({ server });
 const PORT = config.OBSIDIAN_CITY_PORT || 3333;
 const VAULT_PATH = config.VAULT_PATH;
 
+// Initialize JWT if secret is provided
+if (config.JWT_SECRET) {
+  initJwt({
+    secret: config.JWT_SECRET,
+    expiresIn: config.JWT_EXPIRES_IN
+  });
+  logger.info(`🔐 JWT authentication enabled`);
+} else {
+  logger.info(`🔓 JWT authentication disabled (optional mode)`);
+}
+
 // ── MIDDLEWARE ─────────────────────────────────────────────────────────────────
-app.use(cors({ origin: "*" }));
+const corsOptions = config.CORS_ORIGIN === "*" 
+  ? { origin: "*" }
+  : { origin: config.CORS_ORIGIN };
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Rate limiting for API routes
@@ -66,6 +81,94 @@ app.use("/api/vault", vaultRouter);
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.get("/api/swagger.json", (req: Request, res: Response) => {
   res.json(swaggerSpec);
+});
+
+// ── AUTH ROUTES ─────────────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /api/auth/login:
+ *   post:
+ *     summary: Login and get JWT token
+ *     description: Authenticate and receive a JWT token (only if JWT_SECRET is configured)
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               username:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Login successful, returns JWT token
+ *       401:
+ *         description: Invalid credentials
+ *       503:
+ *         description: JWT not configured
+ */
+app.post("/api/auth/login", (req: Request, res: Response) => {
+  // Check if JWT is configured
+  if (!isJwtEnabled()) {
+    return res.status(503).json({
+      error: "Service Unavailable",
+      message: "Authentication is not configured",
+      hint: "Set JWT_SECRET in .env to enable authentication"
+    });
+  }
+
+  const { username, password } = req.body;
+
+  // Simple hardcoded auth for demo - in production use proper user store
+  const validUsers: Record<string, string> = {
+    admin: process.env.JWT_ADMIN_PASSWORD || "admin123"
+  };
+
+  if (!username || !validUsers[username] || validUsers[username] !== password) {
+    return res.status(401).json({
+      error: "Unauthorized",
+      message: "Invalid credentials"
+    });
+  }
+
+  const token = generateToken({
+    sub: username,
+    role: username === "admin" ? "admin" : "user"
+  });
+
+  res.json({
+    token,
+    expiresIn: config.JWT_EXPIRES_IN,
+    message: "Login successful"
+  });
+});
+
+/**
+ * @swagger
+ * /api/auth/status:
+ *   get:
+ *     summary: Check authentication status
+ *     description: Returns whether authentication is enabled and current user info
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Authentication status
+ */
+app.get("/api/auth/status", (req: Request, res: Response) => {
+  const authEnabled = isJwtEnabled();
+  
+  res.json({
+    authEnabled,
+    message: authEnabled 
+      ? "Authentication is required for protected routes"
+      : "Authentication is optional (JWT_SECRET not set)"
+  });
 });
 
 // ── HEALTH CHECK (enhanced) ───────────────────────────────────────────────────

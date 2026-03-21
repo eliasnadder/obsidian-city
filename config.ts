@@ -20,7 +20,10 @@ const OPTIONAL_ENV_VARS: EnvVar[] = [
   { key: "OBSIDIAN_CITY_PORT", type: "number", default: 3333 },
   { key: "CACHE_TTL", type: "number", default: 300 },
   { key: "RATE_LIMIT_WINDOW", type: "number", default: 15 * 60 * 1000 },
-  { key: "RATE_LIMIT_MAX", type: "number", default: 100 }
+  { key: "RATE_LIMIT_MAX", type: "number", default: 100 },
+  { key: "JWT_SECRET", type: "string", canBeEmpty: true },
+  { key: "JWT_EXPIRES_IN", type: "string", default: "24h" },
+  { key: "CORS_ORIGIN", type: "string", default: "*" }
 ];
 
 export interface AppConfig {
@@ -31,6 +34,9 @@ export interface AppConfig {
   RATE_LIMIT_MAX: number;
   CACHE_ENABLED: boolean;
   LOG_LEVEL: string;
+  JWT_SECRET?: string;
+  JWT_EXPIRES_IN: string;
+  CORS_ORIGIN: string;
 }
 
 interface ValidationResult {
@@ -89,6 +95,9 @@ function validateConfig(): ValidationResult {
   config.VAULT_PATH = config.VAULT_PATH || path.join(process.env.HOME || "", "obsidian-vault");
   config.CACHE_ENABLED = true;
   config.LOG_LEVEL = process.env.LOG_LEVEL || "info";
+  config.JWT_SECRET = process.env.JWT_SECRET;
+  config.JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "24h";
+  config.CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 
   return { config, errors };
 }
