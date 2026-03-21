@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ObsidianCity3D</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="shortcut icon" href="cityscape.png" type="image/x-icon">
+  </head>
+  <body>
+    <!-- ══ LOADING ══════════════════════════════════════════════════ -->
+    <div id="loading">
+      <div class="load-logo">OBSIDIAN CITY</div>
+      <div class="load-sub">3D Knowledge Navigator</div>
+      <div class="load-bar-wrap">
+        <div class="load-bar-fill" id="bar"></div>
+      </div>
+      <p id="loading-msg">Connecting to vault...</p>
+    </div>
+
+    <!-- ══ CANVAS ════════════════════════════════════════════════════ -->
+    <canvas id="c"></canvas>
+
+    <!-- ══ TOP BAR ══════════════════════════════════════════════════
+     LEFT: Location  |  CENTER: Time ·sep· Weather  |  RIGHT: Search + nav
+══════════════════════════════════════════════════════════════════ -->
+    <div id="top-bar">
+      <!-- LEFT: Current Location -->
+      <div id="top-left">
+        <div id="loc-block">
+          <span class="loc-dot"></span>
+          <div>
+            <div class="loc-label">Current Location</div>
+            <div id="hud-loc">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: Time + separator + Weather below -->
+      <div id="top-center">
+        <div id="time-weather-block">
+          <div id="time-display">--:--</div>
+          <div class="time-weather-sep"></div>
+          <div id="weather-block">
+            <span id="weather-icon">☀️</span>
+            <div>
+              <div id="weather-text">—</div>
+              <div id="weather-details">
+                — °C &nbsp;·&nbsp; — km/h &nbsp;·&nbsp; —%
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Search + nav buttons -->
+      <div id="top-right">
+        <select
+          id="city-select"
+          onchange="teleportToCity(this.value)"
+          title="Jump to city"
+        >
+          <option value="">🏙 Cities</option>
+        </select>
+        <button
+          id="graph-btn"
+          class="top-btn icon-btn"
+          onclick="toggleGraphView()"
+          title="Graph View"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle
+              cx="2"
+              cy="7"
+              r="1.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <circle
+              cx="12"
+              cy="3"
+              r="1.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <circle
+              cx="12"
+              cy="11"
+              r="1.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <circle
+              cx="7"
+              cy="7"
+              r="1.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <line
+              x1="3.5"
+              y1="7"
+              x2="5.5"
+              y2="7"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <line
+              x1="8.5"
+              y1="7"
+              x2="10.5"
+              y2="4"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <line
+              x1="8.5"
+              y1="7"
+              x2="10.5"
+              y2="10"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+          </svg>
+        </button>
+        <button
+          class="top-btn icon-btn"
+          onclick="openSettings()"
+          title="Settings"
+        >
+          ⚙
+        </button>
+        <div class="top-sep"></div>
+        <button class="top-btn search-trigger" onclick="openSearch()">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 13 13"
+            fill="none"
+            style="opacity: 0.6"
+          >
+            <circle
+              cx="5.5"
+              cy="5.5"
+              r="4.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <line
+              x1="9"
+              y1="9"
+              x2="12"
+              y2="12"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+          </svg>
+          Search...
+          <span class="search-kbd">Ctrl K</span>
+        </button>
+      </div>
+    </div>
+    <!-- /top-bar -->
+
+    <!-- ══ SPEEDOMETER ══════════════════════════════════════════════ -->
+    <div id="hud-speed-block">
+      <div id="hud-spd">0</div>
+      <div class="speed-unit">km / h</div>
+      <div id="speed-bar-wrap"><div id="speed-bar-fill"></div></div>
+    </div>
+
+    <!-- ══ STATS CHIPS (top-right corner) ══════════════════════════ -->
+    <div id="stats-chips">
+      <div class="stat-chip">
+        <span class="stat-chip-label">Cities</span
+        ><span class="stat-chip-val" id="s-cities">—</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-chip-label">Notes</span
+        ><span class="stat-chip-val" id="s-notes">—</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-chip-label">Links</span
+        ><span class="stat-chip-val" id="s-links">—</span>
+      </div>
+    </div>
+
+    <!-- ══ CONTROLS HELP (? key) ════════════════════════════════════ -->
+    <div id="hud">
+      <div class="ctrl-row">
+        <span class="ctrl-key">W / ↑</span
+        ><span class="ctrl-desc">Forward</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">S / ↓</span
+        ><span class="ctrl-desc">Backward</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">A / D</span><span class="ctrl-desc">Steer</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">F</span><span class="ctrl-desc">Turbo 🔥</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">Space</span
+        ><span class="ctrl-desc">Hard brake</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">Z</span><span class="ctrl-desc">Jump</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">E</span
+        ><span class="ctrl-desc">Enter building</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">R</span
+        ><span class="ctrl-desc">Unstuck car</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">H</span
+        ><span class="ctrl-desc">Height legend</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">?</span
+        ><span class="ctrl-desc">Toggle this help</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">Click</span
+        ><span class="ctrl-desc">Open note</span>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-key">Map click</span
+        ><span class="ctrl-desc">Teleport</span>
+      </div>
+    </div>
+
+    <!-- ══ LEGEND ════════════════════════════════════════════════════ -->
+    <div id="legend">
+      <div class="legend-title">Building Types</div>
+    </div>
+
+    <!-- ══ HEIGHT LEGEND ════════════════════════════════════════════ -->
+    <div id="height-legend">
+      <div class="hl-title">Height = Link Count</div>
+      <div class="hl-row">
+        <div class="hl-bar" style="height: 36px"></div>
+        <span class="hl-text">12+ links</span>
+      </div>
+      <div class="hl-row">
+        <div class="hl-bar" style="height: 24px"></div>
+        <span class="hl-text">7 links</span>
+      </div>
+      <div class="hl-row">
+        <div class="hl-bar" style="height: 16px"></div>
+        <span class="hl-text">3 links</span>
+      </div>
+      <div class="hl-row">
+        <div class="hl-bar" style="height: 8px"></div>
+        <span class="hl-text">1 link</span>
+      </div>
+    </div>
+
+    <!-- ══ MINIMAP ══════════════════════════════════════════════════ -->
+    <div id="minimap-wrap">
+      <div id="minimap-frame">
+        <canvas id="minimap" width="180" height="180"></canvas>
+        <span class="mm-corner tl"></span>
+        <span class="mm-corner tr"></span>
+        <span class="mm-corner bl"></span>
+        <span class="mm-corner br"></span>
+      </div>
+      <div class="mm-label">Tactical Map · Click to Teleport</div>
+    </div>
+
+    <!-- ══ NOTE PANEL ════════════════════════════════════════════════ -->
+    <div id="note-panel">
+      <button class="np-close-btn close" onclick="closePanel()">✕ Close</button>
+      <h2 id="np-title"></h2>
+      <div class="np-divider"></div>
+      <div id="np-meta" class="meta"></div>
+      <div id="np-tags" class="tags"></div>
+      <div id="np-links" class="links">
+        <div class="np-links-title">Outbound Links</div>
+      </div>
+      <div class="md-content" id="np-content"></div>
+    </div>
+
+    <!-- ══ HOVER TOOLTIP ════════════════════════════════════════════ -->
+    <div id="hover-tooltip">
+      <div class="ht-name" id="ht-name"></div>
+      <div id="ht-tags"></div>
+      <div class="ht-stat" id="ht-stat"></div>
+    </div>
+
+    <!-- ══ NOTE PREVIEW (proximity) ═════════════════════════════════ -->
+    <div id="note-preview">
+      <div class="np2-title" id="np2-title"></div>
+      <div class="np2-text" id="np2-text"></div>
+    </div>
+
+    <!-- ══ SEARCH OVERLAY ════════════════════════════════════════════ -->
+    <div id="search-overlay" role="dialog" aria-modal="true">
+      <div id="search-box">
+        <div class="search-bar">
+          <svg
+            class="search-icon"
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+          >
+            <circle
+              cx="7"
+              cy="7"
+              r="5.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+              opacity=".5"
+            />
+            <line
+              x1="11"
+              y1="11"
+              x2="15"
+              y2="15"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              opacity=".5"
+            />
+          </svg>
+          <input
+            id="search-input"
+            type="text"
+            placeholder="Search notes, cities, tags..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <span class="search-kbd">ESC</span>
+        </div>
+        <div id="search-results"></div>
+        <div id="search-hint">
+          <span>↑↓ Navigate</span>
+          <span>↵ Teleport</span>
+          <span>ESC Close</span>
+          <span>Ctrl+K Open</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ STATS MODAL ═══════════════════════════════════════════════ -->
+    <div id="stats-modal" role="dialog">
+      <div id="stats-content">
+        <h2>📊 Vault Statistics</h2>
+        <div id="stats-body"></div>
+        <button class="stats-close-btn" onclick="closeStats()">Close</button>
+      </div>
+    </div>
+
+    <!-- ══ CREATE NOTE MODAL ═════════════════════════════════════════ -->
+    <div id="create-note-modal" role="dialog">
+      <div id="create-note-content">
+        <h2>✦ Create New Note</h2>
+        <div class="cn-field">
+          <label>Note Name *</label>
+          <input id="cn-name" type="text" placeholder="e.g. React Hooks" />
+        </div>
+        <div class="cn-field">
+          <label>Folder (City)</label>
+          <select id="cn-folder"></select>
+        </div>
+        <div class="cn-field">
+          <label>Content</label>
+          <textarea
+            id="cn-content"
+            placeholder="Write note content..."
+          ></textarea>
+        </div>
+        <div class="cn-field">
+          <label>Tags (space-separated)</label>
+          <input id="cn-tags" type="text" placeholder="e.g. frontend react" />
+        </div>
+        <div class="cn-btns">
+          <button class="cn-btn cn-btn-primary" onclick="submitCreateNote()">
+            Create Note
+          </button>
+          <button class="cn-btn cn-btn-cancel" onclick="closeCreateNote()">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SETTINGS MODAL (FEAT-1) ══════════════════════════════════ -->
+    <div id="settings-modal" role="dialog">
+      <div id="settings-content">
+        <div class="settings-header">
+          <h2>⚙ Settings</h2>
+          <button class="settings-close" onclick="closeSettings()">✕</button>
+        </div>
+
+        <!-- Car -->
+        <div class="settings-section">
+          <div class="settings-section-title">🚗 Vehicle</div>
+          <div class="settings-row">
+            <label>Car Color</label>
+            <input
+              type="color"
+              id="car-color"
+              value="#c62828"
+              oninput="changeCarColor(this.value)"
+            />
+          </div>
+          <div class="settings-row">
+            <label>Max Speed</label>
+            <input
+              type="range"
+              id="setting-speed"
+              min="0.5"
+              max="3"
+              step="0.1"
+              value="1.2"
+              oninput="
+                drv.maxV = +this.value;
+                document.getElementById('setting-speed-val').textContent =
+                  this.value;
+              "
+            />
+            <span class="settings-val" id="setting-speed-val">1.2</span>
+          </div>
+        </div>
+
+        <!-- Time & Weather -->
+        <div class="settings-section">
+          <div class="settings-section-title">🌤 Time & Weather</div>
+          <div class="settings-row">
+            <label>Auto Day/Night Cycle</label>
+            <div
+              class="settings-toggle"
+              id="toggle-autocycle"
+              onclick="
+                toggleAutoCycle();
+                this.classList.toggle('on');
+              "
+            >
+              <div class="toggle-knob"></div>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label
+              >Cycle Speed
+              <span style="opacity: 0.4; font-size: 0.7rem"
+                >(min/hr)</span
+              ></label
+            >
+            <input
+              type="range"
+              id="setting-cyclespeed"
+              min="10"
+              max="300"
+              step="10"
+              value="60"
+              oninput="
+                autoCycleSpeed = +this.value;
+                document.getElementById('setting-cyclespeed-val').textContent =
+                  this.value;
+              "
+            />
+            <span class="settings-val" id="setting-cyclespeed-val">60</span>
+          </div>
+        </div>
+
+        <!-- World -->
+        <div class="settings-section">
+          <div class="settings-section-title">🌍 World</div>
+          <div class="settings-row">
+            <label>Graph View</label>
+            <div
+              class="settings-toggle"
+              id="toggle-graph"
+              onclick="
+                toggleGraphView();
+                this.classList.toggle('on');
+              "
+            >
+              <div class="toggle-knob"></div>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label>Fog Density</label>
+            <input
+              type="range"
+              id="setting-fog"
+              min="0.0005"
+              max="0.008"
+              step="0.0005"
+              value="0.002"
+              oninput="if (scene.fog) scene.fog.density = +this.value;"
+            />
+            <span class="settings-val">Auto</span>
+          </div>
+        </div>
+
+        <!-- Vault -->
+        <div class="settings-section">
+          <div class="settings-section-title">📁 Vault</div>
+          <div class="settings-row">
+            <label>Vault Path</label>
+            <span class="settings-val-text" id="setting-vault-path">—</span>
+          </div>
+          <div class="settings-row">
+            <label>Total Notes</label>
+            <span class="settings-val-text" id="setting-note-count">—</span>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="settings-section">
+          <div class="settings-section-title">🔧 Actions</div>
+          <div class="settings-actions">
+            <button
+              class="settings-action-btn"
+              onclick="
+                unstuckCar();
+                showToastMsg('Car unstuck!');
+              "
+            >
+              🚨 Unstuck Car
+            </button>
+            <button class="settings-action-btn" onclick="takeScreenshot()">
+              📸 Screenshot
+            </button>
+            <button
+              class="settings-action-btn"
+              onclick="
+                openStats();
+                closeSettings();
+              "
+            >
+              📊 Stats
+            </button>
+            <button class="settings-action-btn" onclick="exportCityImage()">
+              🗺 Export Map
+            </button>
+            <button
+              class="settings-action-btn warn"
+              onclick="
+                localStorage.removeItem('carLocation');
+                showToastMsg('Location reset');
+              "
+            >
+              ⏺ Reset Location
+            </button>
+          </div>
+        </div>
+
+        <!-- Keyboard shortcuts -->
+        <div class="settings-section">
+          <div class="settings-section-title">⌨ Keyboard Shortcuts</div>
+          <div class="shortcuts-grid">
+            <span class="ctrl-key">Ctrl+K</span
+            ><span class="ctrl-desc">Search</span>
+            <span class="ctrl-key">W/S/A/D</span
+            ><span class="ctrl-desc">Drive</span> <span class="ctrl-key">F</span
+            ><span class="ctrl-desc">Turbo</span> <span class="ctrl-key">E</span
+            ><span class="ctrl-desc">Enter building</span>
+            <span class="ctrl-key">Z</span><span class="ctrl-desc">Jump</span>
+            <span class="ctrl-key">R</span
+            ><span class="ctrl-desc">Unstuck</span>
+            <span class="ctrl-key">H</span
+            ><span class="ctrl-desc">Height legend</span>
+            <span class="ctrl-key">?</span
+            ><span class="ctrl-desc">Controls help</span>
+            <span class="ctrl-key">Tab</span
+            ><span class="ctrl-desc">Settings</span>
+            <span class="ctrl-key">ESC</span
+            ><span class="ctrl-desc">Close panels</span>
+          </div>
+        </div>
+      </div>
+      <!-- /settings-content -->
+    </div>
+    <!-- /settings-modal -->
+
+    <!-- ══ BOTTOM TOOLBAR ════════════════════════════════════════════ -->
+    <div id="bottom-toolbar">
+      <button
+        id="autocycle-btn"
+        class="tb-btn"
+        onclick="toggleAutoCycle()"
+        title="Day/Night Cycle"
+      >
+        ⏱ Auto Cycle
+      </button>
+
+      <div class="tb-sep"></div>
+
+      <button class="tb-btn" onclick="openCreateNote()">✦ New Note</button>
+      <button class="tb-btn" onclick="openStats()">📊 Stats</button>
+      <button class="tb-btn" onclick="takeScreenshot()">📸 Screenshot</button>
+
+      <div class="tb-sep"></div>
+
+      <button id="legend-btn" class="tb-btn" onclick="toggleLegend()">
+        🎨 Legend
+      </button>
+      <button class="tb-btn warn" onclick="unstuckCar()">🚨 Unstuck (R)</button>
+
+      <div class="tb-sep"></div>
+
+      <div id="ws-status">
+        <span class="ws-dot orange" id="ws-indicator"></span>
+        <span>Live</span>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="script.js"></script>
+
+    <!-- ══ BRIDGE: connect new HTML structure to script.js ══════════ -->
+    <script>
+      // ── ? key: toggle controls help ─────────────────────────────────
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "?")
+          document.getElementById("hud").classList.toggle("visible");
+        if (e.key === "Tab") {
+          e.preventDefault();
+          openSettings();
+        }
+      });
+
+      // ── Legend toggle ────────────────────────────────────────────────
+      window.toggleLegend = function () {
+        const el = document.getElementById("legend");
+        el.classList.toggle("visible");
+        document
+          .getElementById("legend-btn")
+          .classList.toggle("active", el.classList.contains("visible"));
+      };
+
+      // ── Settings open/close ──────────────────────────────────────────
+      window.openSettings = function () {
+        // fill vault info
+        if (window.vaultData?.meta) {
+          document.getElementById("setting-vault-path").textContent =
+            vaultData.meta.vaultPath || "—";
+          document.getElementById("setting-note-count").textContent =
+            vaultData.meta.totalNotes || "—";
+        }
+        document.getElementById("settings-modal").classList.add("open");
+      };
+      window.closeSettings = function () {
+        document.getElementById("settings-modal").classList.remove("open");
+      };
+
+      // ── Speedometer sync ─────────────────────────────────────────────
+      (function syncSpeedometer() {
+        requestAnimationFrame(syncSpeedometer);
+        if (!window.drv) return;
+        const kmh = Math.abs(drv.speed * 100);
+        const turbo = window.K && window.K["KeyF"];
+        const el = document.getElementById("hud-spd");
+        const bar = document.getElementById("speed-bar-fill");
+        if (el) el.textContent = kmh.toFixed(0) + (turbo ? " 🔥" : "");
+        if (bar) bar.style.width = Math.min(100, (kmh / 120) * 100) + "%";
+      })();
+
+      // ── buildLegend override ─────────────────────────────────────────
+      window.buildLegend = function () {
+        const el = document.getElementById("legend");
+        if (!el) return;
+        el.innerHTML =
+          '<div class="legend-title">Building Types</div>' +
+          [
+            ["Frontend", "#1a73e8"],
+            ["Backend", "#1e8449"],
+            ["AI / ML", "#7d3c98"],
+            ["DevOps", "#ca6f1e"],
+            ["Database", "#b03a2e"],
+            ["Project", "#d4ac0d"],
+            ["Research", "#1abc9c"],
+            ["Other", "#546e7a"],
+          ]
+            .map(
+              ([n, c]) =>
+                `<div class="leg-row"><span class="leg-dot" style="background:${c}"></span><span class="leg-label">${n}</span></div>`,
+            )
+            .join("");
+        el.classList.add("visible");
+      };
+
+      // ── toast override ────────────────────────────────────────────────
+      window.showToastMsg = function (msg) {
+        document.querySelectorAll(".toast-msg").forEach((t) => t.remove());
+        const t = document.createElement("div");
+        t.className = "toast-msg";
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 2700);
+      };
+    </script>
+  </body>
+</html>
