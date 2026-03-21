@@ -785,6 +785,155 @@ router.get("/", (req: Request, res: Response) => {
  *       404:
  *         description: Vault not found
  */
+
+/**
+ * @swagger
+ * /api/vault/notes:
+ *   get:
+ *     summary: Get paginated list of all notes
+ *     description: Returns a paginated list of all notes in the vault with optional folder/tag filtering
+ *     tags: [Vault]
+ *     security: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number (1-indexed)
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *           maximum: 500
+ *         description: Number of notes per page
+ *       - in: query
+ *         name: folder
+ *         schema:
+ *           type: string
+ *         description: Filter by folder path
+ *       - in: query
+ *         name: tag
+ *         schema:
+ *           type: string
+ *         description: Filter by tag
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [name, date, links]
+ *           default: name
+ *         description: Sort field
+ *     responses:
+ *       200:
+ *         description: Paginated notes list
+ *       404:
+ *         description: Vault not found
+ */
+router.get("/notes", (req: Request, res: Response) => {
+  // Parse pagination params
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string) || 100));
+  const offset = (page - 1) * limit;
+  
+  // Parse filters
+  const folderFilter = req.query.folder as string | undefined;
+  const tagFilter = req.query.tag as string | undefined;
+  const sortBy = req.query.sort as string || "name";
+  
+  // Try cache first
+  const cacheKey = `vault:notes:${page}:${limit}:${folderFilter || ""}:${tagFilter || ""}:${sortBy}`;
+  const cached = cache.get<any>(cacheKey);
+  if (cached) {
+    return res.json({ ...cached, cached: true });
+  }
+  
+  if (!fs.existsSync(VAULT_PATH)) {
+    return res.status(404).json({ error: "Vault not found" });
+  }
+  
+  try {
+    const { tree, index } = getVaultData();
+    if (!tree) return res.status(500).json({ error: "Empty vault" });
+    
+    // Collect all notes
+    const allNotes: any[] = [];
+    
+    function collectNotes(node: FolderNode, folderPath = ""): void {
+      const currentFolder = folderPath ? `${folderPath}/${node.name}` : node.name;
+      
+      for (const note of node.notes || []) {
+        const noteData = {
+          id: note.id,
+          name: note.name,
+          path: note.path,
+          folder: currentFolder,
+          tags: note.tags,
+          color: note.color,
+          height: note.height,
+          wordCount: note.wordCount,
+          linkCount: note.linkCount,
+          links: note.links,
+          inboundLinks: note.inboundLinks || 0
+        };
+        
+        // Apply filters
+        if (folderFilter && currentFolder.toLowerCase() !== folderFilter.toLowerCase()) {
+          return;
+        }
+        if (tagFilter && !note.tags.includes(tagFilter.toLowerCase())) {
+          return;
+        }
+        
+        allNotes.push(noteData);
+      }
+      
+      for (const sub of node.subfolders || []) {
+        collectNotes(sub, currentFolder);
+      }
+    }
+    
+    collectNotes(tree);
+    
+    // Sort notes
+    if (sortBy === "date") {
+      allNotes.sort((a, b) => {
+        const dateA = fs.existsSync(a.path) ? fs.statSync(a.path).mtime.getTime() : 0;
+        const dateB = fs.existsSync(b.path) ? fs.statSync(b.path).mtime.getTime() : 0;
+        return dateB - dateA;
+      });
+    } else if (sortBy === "links") {
+      allNotes.sort((a, b) => (b.inboundLinks || 0) - (a.inboundLinks || 0));
+    } else {
+      allNotes.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    
+    const totalNotes = allNotes.length;
+    const totalPages = Math.ceil(totalNotes / limit);
+    const paginatedNotes = allNotes.slice(offset, offset + limit);
+    
+    const result = {
+      notes: paginatedNotes,
+      total: totalNotes,
+      page,
+      limit,
+      totalPages,
+      sort: sortBy,
+      filters: {
+        folder: folderFilter || null,
+        tag: tagFilter || null
+      }
+    };
+    
+    cache.set(cacheKey, result, 60); // Cache for 60 seconds
+    res.json({ ...result, cached: false });
+  } catch (err) {
+    console.error("[Notes] Error:", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 router.get("/search", (req: Request, res: Response) => {
   const { error, value } = schemas.search.validate(req.query);
   
