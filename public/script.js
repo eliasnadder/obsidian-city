@@ -4,6 +4,7 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 const API = "http://localhost:3333/api/vault";
+const AI_API = API.replace(/\/vault$/, "/ai");
 const WS = "ws://localhost:3333";
 const canvas = document.getElementById("c");
 
@@ -157,8 +158,9 @@ function loadLocation() {
   if (saved) {
     const loc = JSON.parse(saved);
     if (car) {
-      car.position.x = loc.x;
-      car.position.z = loc.z;
+      placeCarSafely(loc.x, loc.z);
+      drv.speed = 0;
+      drv.verticalV = 0;
       drv.angle = loc.angle;
     }
     if (loc.time) {
@@ -609,6 +611,11 @@ function buildRoad(x1, z1, x2, z2, w = 12) {
     post.position.copy(lampPos);
     post.castShadow = true;
     scene.add(post);
+    collisionObjects.push({
+      pos: new THREE.Vector3(lampPos.x, 0, lampPos.z),
+      radius: 0.7,
+      kind: "lamp",
+    });
 
     // Lamp light source (non-shadow casting, for effect)
     const lampLight = new THREE.PointLight(0xffff99, 0.15, 40); // weaker lighting
@@ -651,8 +658,9 @@ function buildBuilding(note, bx, bz) {
 
   // Add collision sphere
   collisionObjects.push({
-    pos: body.position.clone(),
+    pos: new THREE.Vector3(bx, 0, bz),
     radius: Math.max(bw, bd) / 2 + 0.5,
+    kind: "building",
   });
 
   // Decorative roof
@@ -808,6 +816,7 @@ function addTrees(count = 200) {
     collisionObjects.push({
       pos: new THREE.Vector3(tx, 0, tz),
       radius: foliageScale * 0.8, // Smaller radius for easier navigation
+      kind: "tree",
     });
   }
 }
@@ -965,14 +974,22 @@ let car,
     angle: 0,
     maxV: 1.2,
     acc: 0.025,
+    reverseAcc: 0.018,
     dec: 0.012,
     brk: 0.08,
     turn: 0.035,
+    turnFast: 0.014,
+    steer: 0,
+    steerResponse: 0.22,
     radius: 2.2, // ← increased slightly for realism
     friction: 0.94,
+    jumpForce: 0.45,
+    gravity: 0.025,
     verticalV: 0,
     isAirborne: false,
     collisionCooldown: 0, // ← new: cooldown period after collision
+    impactCooldown: 0,
+    turboMultiplier: 1.35,
   };
 
 function buildCar() {
@@ -1052,30 +1069,146 @@ function buildCar() {
 }
 
 // ── COLLISION DETECTION ──────────────────────────────────────────────────────
-function checkCollision(pos) {
-  for (const obj of collisionObjects) {
-    // skip far away objects (performance optimization)
-    if (Math.abs(pos.x - obj.pos.x) > 80 || Math.abs(pos.z - obj.pos.z) > 80)
-      continue;
+function approachValue(value, target, maxDelta) {
+  if (value < target) return Math.min(value + maxDelta, target);
+  if (value > target) return Math.max(value - maxDelta, target);
+  return target;
+}
 
-    const dist = pos.distanceTo(obj.pos);
-    if (dist < drv.radius + obj.radius) {
-      return true;
+function getCollisionHits(pos, radius = drv.radius) {
+  const hits = [];
+
+  for (const obj of collisionObjects) {
+    const maxDelta = 80 + obj.radius + radius;
+    const dx = pos.x - obj.pos.x;
+    const dz = pos.z - obj.pos.z;
+
+    if (Math.abs(dx) > maxDelta || Math.abs(dz) > maxDelta) continue;
+
+    const minDist = radius + obj.radius;
+    const distSq = dx * dx + dz * dz;
+    if (distSq >= minDist * minDist) continue;
+
+    const dist = Math.sqrt(distSq);
+    let normalX = 0;
+    let normalZ = 0;
+
+    if (dist > 0.0001) {
+      normalX = dx / dist;
+      normalZ = dz / dist;
+    } else {
+      normalX = Math.sin(drv.angle + Math.PI / 2);
+      normalZ = Math.cos(drv.angle + Math.PI / 2);
+    }
+
+    hits.push({
+      obj,
+      distance: dist,
+      penetration: minDist - dist,
+      normalX,
+      normalZ,
+    });
+  }
+
+  hits.sort((a, b) => b.penetration - a.penetration);
+  return hits;
+}
+
+function checkCollision(pos) {
+  return getCollisionHits(pos).length > 0;
+}
+
+function resolveCollisionPenetration(
+  pos,
+  radius = drv.radius,
+  maxIterations = 4,
+) {
+  const resolved = pos.clone();
+  let strongestHit = null;
+  let collided = false;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const hits = getCollisionHits(resolved, radius);
+    if (!hits.length) break;
+
+    collided = true;
+    for (const hit of hits) {
+      const push = hit.penetration + 0.02;
+      resolved.x += hit.normalX * push;
+      resolved.z += hit.normalZ * push;
+      if (!strongestHit || hit.penetration > strongestHit.penetration) {
+        strongestHit = hit;
+      }
     }
   }
-  return false;
+
+  return { collided, position: resolved, hit: strongestHit };
+}
+
+function moveWithCollision(startPos, moveVec) {
+  const intended = startPos.clone().add(moveVec);
+  const direct = resolveCollisionPenetration(intended);
+
+  if (!direct.collided) {
+    return {
+      position: direct.position,
+      collided: false,
+      hit: null,
+      travelled: moveVec.length(),
+    };
+  }
+
+  let slideVec = moveVec.clone();
+  const moveLen = moveVec.length();
+
+  if (direct.hit && moveLen > 0.0001) {
+    const dot =
+      moveVec.x * direct.hit.normalX + moveVec.z * direct.hit.normalZ;
+    if (dot < 0) {
+      slideVec.x -= direct.hit.normalX * dot;
+      slideVec.z -= direct.hit.normalZ * dot;
+    }
+    slideVec.multiplyScalar(0.92);
+  } else {
+    slideVec.set(0, 0, 0);
+  }
+
+  const slide = resolveCollisionPenetration(startPos.clone().add(slideVec));
+  const directTravel = direct.position.distanceToSquared(startPos);
+  const slideTravel = slide.position.distanceToSquared(startPos);
+  const best = slideTravel > directTravel ? slide : direct;
+
+  return {
+    position: best.position,
+    collided: true,
+    hit: best.hit || direct.hit,
+    travelled: Math.sqrt(Math.max(directTravel, slideTravel)),
+  };
+}
+
+function placeCarSafely(x, z) {
+  if (!car) return;
+  const safe = resolveCollisionPenetration(new THREE.Vector3(x, 0, z));
+  car.position.x = safe.position.x;
+  car.position.z = safe.position.z;
 }
 
 function unstuckCar() {
   if (!car) return;
 
-  // make car jump forward out of collision
-  drv.collisionCooldown = 60; // full second of ignoring collisions
+  // relocate the car backwards and clear overlap with nearby obstacles
+  drv.collisionCooldown = 30; // short recovery window after relocation
+  drv.impactCooldown = 10;
   drv.speed = 0;
+  drv.steer = 0;
+  drv.verticalV = 0;
 
-  // move 15 units forward in opposite direction
-  car.position.x -= Math.sin(drv.angle) * 15;
-  car.position.z -= Math.cos(drv.angle) * 15;
+  // move backward and resolve against nearby obstacles
+  const escapeDistance = 18;
+  placeCarSafely(
+    car.position.x - Math.sin(drv.angle) * escapeDistance,
+    car.position.z - Math.cos(drv.angle) * escapeDistance,
+  );
   car.position.y = 0;
 
   // flash notification
@@ -1168,13 +1301,13 @@ function createParticle(pos, vel) {
   particles.push(p);
 }
 
-function updateParticles() {
+function updateParticles(frameFactor = 1) {
   let alive = 0;
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
-    p.life -= 0.015;
-    p.pos.add(p.vel);
-    p.vel.y -= 0.002; // gravity
+    p.life -= 0.015 * frameFactor;
+    p.pos.addScaledVector(p.vel, frameFactor);
+    p.vel.y -= 0.002 * frameFactor; // gravity
     p.mesh.position.copy(p.pos);
     p.mesh.material.opacity = p.life * 0.3;
 
@@ -1225,38 +1358,1179 @@ canvas.addEventListener("click", (e) => {
 });
 
 // ── NOTE PANEL ───────────────────────────────────────────────────────────────
-function openNotePanel(note) {
-  document.getElementById("np-title").textContent = note.name;
-  document.getElementById("np-meta").textContent =
-    `Links: ${note.linkCount || 0}  |  Words: ${note.wordCount || "—"}`;
-  document.getElementById("np-tags").innerHTML = (note.tags || [])
-    .map((t) => `<span>#${t}</span>`)
+let activePanelNote = null;
+let notePanelRequestId = 0;
+const NOTE_PANEL_WIDTH_KEY = "obsidianCity.notePanelWidth";
+const notePanelState = {
+  isExpanded: false,
+  detectedDirection: "ltr",
+  resizeActive: false,
+  resizeWidth: 460,
+  currentContent: "",
+  aiStatusChecked: false,
+  aiEnabled: null,
+  aiBusy: false,
+  aiDraft: null,
+  aiChat: null,
+  aiStreamController: null,
+};
+const vaultAuditState = {
+  isLoading: false,
+  report: null,
+  sampleSize: 0,
+};
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  let data = null;
+
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.message || data?.error || `Request failed with HTTP ${response.status}`,
+    );
+  }
+
+  return data;
+}
+
+function normalizeNoteId(value = "") {
+  return String(value)
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    .replace(/\.[^.]+$/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
+function encodeNoteRef(value = "") {
+  return encodeURIComponent(normalizeNoteId(value));
+}
+
+function decodeNoteRef(value = "") {
+  return decodeURIComponent(value);
+}
+
+function stripFrontmatter(content = "") {
+  return String(content).replace(/^---\s*\n[\s\S]*?\n---\s*/u, "").trim();
+}
+
+function detectTextDirection(text = "") {
+  const sample = String(text).trim();
+  if (!sample) return "ltr";
+
+  const rtlCount =
+    sample.match(/[\u0590-\u08FF\uFB1D-\uFDFD\uFE70-\uFEFC]/g)?.length || 0;
+  const ltrCount =
+    sample.match(/[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]/g)?.length || 0;
+
+  if (rtlCount > 0 && rtlCount >= ltrCount) return "rtl";
+  return "ltr";
+}
+
+function formatRelativeNotePath(notePath = "") {
+  const normalized = String(notePath).replace(/\\/g, "/");
+  const vaultPath = String(vaultData?.meta?.vaultPath || "").replace(/\\/g, "/");
+  if (vaultPath && normalized.startsWith(vaultPath)) {
+    return normalized.slice(vaultPath.length).replace(/^\/+/, "") || normalized;
+  }
+  return normalized;
+}
+
+function getNoteFolder(notePath = "") {
+  const relative = formatRelativeNotePath(notePath);
+  const parts = relative.split("/");
+  parts.pop();
+  return parts.join(" / ") || "Vault Root";
+}
+
+function buildNoteSummary(content = "", note = {}) {
+  const clean = stripFrontmatter(content)
+    .replace(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g, "$1")
+    .replace(/#+\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (clean) return clean.slice(0, 180) + (clean.length > 180 ? "..." : "");
+
+  const tagText = (note.tags || []).slice(0, 3).map((t) => `#${t}`).join(" · ");
+  return tagText || "No preview available for this note yet.";
+}
+
+function formatInlineNoteMarkup(text = "") {
+  const escaped = escapeHtml(text);
+
+  return escaped
+    .replace(
+      /\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]/g,
+      (_match, rawTarget, rawLabel) =>
+        `<button type="button" class="np-inline-link" dir="auto" data-note-link="${encodeNoteRef(rawTarget)}">${escapeHtml(rawLabel || rawTarget.trim())}</button>`,
+    )
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(
+      /(^|[\s(])#([\w/-]+)/g,
+      '$1<span class="np-inline-tag">#$2</span>',
+    );
+}
+
+function renderNoteContent(rawContent = "") {
+  const content = stripFrontmatter(rawContent);
+  if (!content) {
+    return '<div class="np-empty">No note content available.</div>';
+  }
+
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let listItems = [];
+  let quoteLines = [];
+  let codeLines = [];
+  let inCodeBlock = false;
+
+  function flushParagraph() {
+    if (!paragraph.length) return;
+    html.push(`<p>${formatInlineNoteMarkup(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  }
+
+  function flushList() {
+    if (!listItems.length) return;
+    html.push(
+      `<ul>${listItems
+        .map((item) => `<li>${formatInlineNoteMarkup(item)}</li>`)
+        .join("")}</ul>`,
+    );
+    listItems = [];
+  }
+
+  function flushQuote() {
+    if (!quoteLines.length) return;
+    html.push(
+      `<blockquote>${quoteLines
+        .map((line) => `<p>${formatInlineNoteMarkup(line)}</p>`)
+        .join("")}</blockquote>`,
+    );
+    quoteLines = [];
+  }
+
+  function flushCode() {
+    if (!codeLines.length) return;
+    html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    codeLines = [];
+  }
+
+  for (const line of lines) {
+    if (/^```/.test(line.trim())) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      if (inCodeBlock) {
+        flushCode();
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      const level = Math.min(heading[1].length + 2, 6);
+      html.push(
+        `<h${level}>${formatInlineNoteMarkup(heading[2])}</h${level}>`,
+      );
+      continue;
+    }
+
+    const listItem = line.match(/^\s*[-*]\s+(.*)$/);
+    if (listItem) {
+      flushParagraph();
+      flushQuote();
+      listItems.push(listItem[1]);
+      continue;
+    }
+
+    const quoteLine = line.match(/^\s*>\s?(.*)$/);
+    if (quoteLine) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quoteLine[1]);
+      continue;
+    }
+
+    paragraph.push(line.trim());
+  }
+
+  flushParagraph();
+  flushList();
+  flushQuote();
+  flushCode();
+
+  return html.join("") || '<div class="np-empty">No note content available.</div>';
+}
+
+function renderPanelMeta(note) {
+  const stats = [
+    { label: "Words", value: note.wordCount || "—" },
+    { label: "Outgoing", value: note.linkCount || note.links?.length || 0 },
+    { label: "Inbound", value: note.inboundLinks || 0 },
+    { label: "Folder", value: getNoteFolder(note.path) },
+  ];
+
+  return stats
+    .map(
+      ({ label, value }) => `
+        <div class="np-stat">
+          <div class="np-stat-label">${escapeHtml(label)}</div>
+          <div class="np-stat-value">${escapeHtml(value)}</div>
+        </div>`,
+    )
     .join("");
-  document.getElementById("np-links").innerHTML =
-    '<b style="font-size:11px;opacity:.4">Outgoing Links:</b><br>' +
-    (note.links || [])
-      .map((l) => `<a href="#" onclick="return false">${l}</a>`)
+}
+
+function renderPanelTags(tags = []) {
+  if (!tags.length) {
+    return '<span class="np-inline-tag">untagged</span>';
+  }
+
+  return tags
+    .map((tag) => `<span dir="auto">#${escapeHtml(tag)}</span>`)
+    .join("");
+}
+
+function renderPanelLinks(links = []) {
+  if (!links.length) {
+    return '<div class="np-empty">No outbound links from this note.</div>';
+  }
+
+  return links
+    .map(
+      (link) => `
+        <button type="button" class="np-link-item" dir="auto" data-note-link="${encodeNoteRef(link)}">
+          <span class="np-link-name">${escapeHtml(link)}</span>
+          <span class="np-link-meta">Open</span>
+        </button>`,
+    )
+    .join("");
+}
+
+function setNotePanelAiStatus(message, tone = "dim") {
+  const statusEl = document.getElementById("np-ai-status");
+  if (!statusEl) return;
+  statusEl.textContent = message;
+
+  const toneColor = {
+    dim: "rgba(172, 217, 255, 0.52)",
+    ok: "rgba(116, 234, 186, 0.9)",
+    warn: "rgba(255, 198, 106, 0.88)",
+    error: "rgba(255, 125, 125, 0.9)",
+  };
+  statusEl.style.color = toneColor[tone] || toneColor.dim;
+}
+
+function syncAiPanelControls() {
+  const organizeBtn = document.getElementById("np-ai-organize-btn");
+  const applyBtn = document.getElementById("np-ai-apply-btn");
+  const askBtn = document.getElementById("np-ai-ask-btn");
+  const available = notePanelState.aiEnabled !== false && !!activePanelNote;
+  const busy = !!notePanelState.aiBusy;
+
+  if (organizeBtn) organizeBtn.disabled = !available || busy;
+  if (askBtn) askBtn.disabled = !available || busy;
+  if (applyBtn) {
+    applyBtn.disabled = !available || busy || !notePanelState.aiDraft;
+  }
+}
+
+function renderAiList(items = []) {
+  if (!items.length) {
+    return '<div class="np-empty">No AI items available for this section.</div>';
+  }
+
+  return `<div class="np-ai-list">${items
+    .map(
+      (item) => `<div class="np-ai-list-item" dir="auto">${escapeHtml(item)}</div>`,
+    )
+    .join("")}</div>`;
+}
+
+function renderAiLinkSuggestions(links = []) {
+  if (!links.length) {
+    return '<div class="np-empty">No internal link suggestions yet.</div>';
+  }
+
+  return `<div class="np-ai-link-list">${links
+    .map(
+      (link) => `
+        <button type="button" class="np-ai-link-item" dir="auto" data-note-link="${encodeNoteRef(link.noteId || link.noteName || "")}">
+          <span class="np-ai-link-title">${escapeHtml(link.noteName || link.noteId || "Related note")}</span>
+          <span class="np-ai-link-reason">${escapeHtml(link.reason || "")}</span>
+        </button>`,
+    )
+    .join("")}</div>`;
+}
+
+function renderAiResults() {
+  const container = document.getElementById("np-ai-results");
+  if (!container) return;
+
+  if (notePanelState.aiEnabled === false) {
+    container.innerHTML =
+      '<div class="np-empty">Gemini AI is disabled. Add `GEMINI_API_KEY` to the backend `.env` to enable organizer features.</div>';
+    syncAiPanelControls();
+    return;
+  }
+
+  if (notePanelState.aiBusy && !notePanelState.aiDraft && !notePanelState.aiChat) {
+    container.innerHTML =
+      '<div class="np-empty">Gemini is analyzing this note. Suggestions will appear here.</div>';
+    syncAiPanelControls();
+    return;
+  }
+
+  const blocks = [];
+  const draft = notePanelState.aiDraft;
+  const chat = notePanelState.aiChat;
+
+  if (draft) {
+    blocks.push(`
+      <div class="np-ai-grid">
+        <div class="np-ai-card">
+          <div class="np-ai-label">Summary</div>
+          <div class="np-ai-value" dir="auto">${escapeHtml(draft.summary || "")}</div>
+        </div>
+        <div class="np-ai-card">
+          <div class="np-ai-label">Refined Title</div>
+          <div class="np-ai-value" dir="auto">${escapeHtml(draft.refinedTitle || activePanelNote?.name || "")}</div>
+        </div>
+        <div class="np-ai-card">
+          <div class="np-ai-label">Suggested Folder</div>
+          <div class="np-ai-value">${escapeHtml(draft.suggestedFolder || "Keep current folder")}</div>
+        </div>
+        <div class="np-ai-card">
+          <div class="np-ai-label">Language</div>
+          <div class="np-ai-value">${escapeHtml(draft.language || notePanelState.detectedDirection.toUpperCase())}</div>
+        </div>
+      </div>
+    `);
+
+    blocks.push(`
+      <div class="np-ai-card">
+        <div class="np-ai-label">Suggested Tags</div>
+        <div class="np-ai-meta">
+          ${(draft.suggestedTags || []).length
+            ? draft.suggestedTags
+                .map((tag) => `<span class="np-ai-chip" dir="auto">#${escapeHtml(tag)}</span>`)
+                .join("")
+            : '<span class="np-ai-value">No new tags suggested.</span>'}
+        </div>
+      </div>
+    `);
+
+    blocks.push(`
+      <div class="np-ai-card">
+        <div class="np-ai-label">Suggested Internal Links</div>
+        ${renderAiLinkSuggestions(draft.suggestedLinks || [])}
+      </div>
+    `);
+
+    blocks.push(`
+      <div class="np-ai-grid">
+        <div class="np-ai-card">
+          <div class="np-ai-label">Organization Issues</div>
+          ${renderAiList(draft.organizationIssues || [])}
+        </div>
+        <div class="np-ai-card">
+          <div class="np-ai-label">Next Actions</div>
+          ${renderAiList(draft.actionItems || [])}
+        </div>
+      </div>
+    `);
+
+    blocks.push(`
+      <div class="np-ai-card">
+        <div class="np-ai-label">Rewrite Draft</div>
+        <pre class="np-ai-value np-ai-draft" dir="${detectTextDirection(draft.rewriteMarkdown || "")}">${escapeHtml(draft.rewriteMarkdown || "")}</pre>
+      </div>
+    `);
+  }
+
+  if (chat) {
+    const focusLinks = (chat.focusNoteIds || [])
+      .map(
+        (noteId) =>
+          `<button type="button" class="np-ai-chip" dir="auto" data-note-link="${encodeNoteRef(noteId)}">${escapeHtml(noteId)}</button>`,
+      )
       .join("");
 
-  // fetch note content
-  const noteId = note.id || note.name?.toLowerCase().replace(/\s+/g, "-");
-  fetch(`${API}/note/${noteId}`)
-    .then((r) => r.json())
-    .then((d) => {
-      document.getElementById("np-content").textContent =
-        d.content?.slice(0, 1200) +
-          (d.content?.length > 1200 ? "\n\n..." : "") || "";
-    })
-    .catch(() => {
-      document.getElementById("np-content").textContent =
-        "(Failed to load content)";
+    blocks.push(`
+      <div class="np-ai-card np-ai-answer" dir="${detectTextDirection(chat.answer || "")}">
+        <div class="np-ai-label">Gemini Answer</div>
+        <div class="np-ai-value">${escapeHtml(chat.answer || (notePanelState.aiBusy ? "Gemini is drafting a response..." : ""))}</div>
+      </div>
+    `);
+
+    if ((chat.suggestedActions || []).length) {
+      blocks.push(`
+        <div class="np-ai-card">
+          <div class="np-ai-label">Suggested Actions</div>
+          ${renderAiList(chat.suggestedActions || [])}
+        </div>
+      `);
+    }
+
+    if (focusLinks) {
+      blocks.push(`
+        <div class="np-ai-card">
+          <div class="np-ai-label">Focus Notes</div>
+          <div class="np-ai-meta">${focusLinks}</div>
+        </div>
+      `);
+    }
+  }
+
+  if (!blocks.length) {
+    container.innerHTML =
+      '<div class="np-empty">Run `Organize` for a rewrite draft, or use `Ask` to get streamed Gemini guidance for this note.</div>';
+  } else {
+    container.innerHTML = blocks.join("");
+  }
+
+  syncAiPanelControls();
+}
+
+async function ensureAiAvailability(force = false) {
+  if (notePanelState.aiStatusChecked && !force) {
+    syncAiPanelControls();
+    return notePanelState.aiEnabled;
+  }
+
+  setNotePanelAiStatus("Checking", "dim");
+
+  try {
+    const status = await fetchJson(`${AI_API}/status`);
+    notePanelState.aiStatusChecked = true;
+    notePanelState.aiEnabled = !!status?.enabled;
+    if (notePanelState.aiEnabled) {
+      setNotePanelAiStatus(`Ready · ${status.model || "Gemini"}`, "ok");
+    } else {
+      setNotePanelAiStatus("Unavailable", "warn");
+    }
+  } catch (err) {
+    notePanelState.aiStatusChecked = true;
+    notePanelState.aiEnabled = false;
+    setNotePanelAiStatus("Unavailable", "error");
+  }
+
+  renderAiResults();
+  return notePanelState.aiEnabled;
+}
+
+function resetAiPanelState() {
+  abortAiChatStream();
+  notePanelState.currentContent = "";
+  notePanelState.aiBusy = false;
+  notePanelState.aiDraft = null;
+  notePanelState.aiChat = null;
+  document.getElementById("np-ai-question").value = "";
+  renderAiResults();
+
+  if (notePanelState.aiStatusChecked) {
+    setNotePanelAiStatus(notePanelState.aiEnabled ? "Ready" : "Unavailable", notePanelState.aiEnabled ? "ok" : "warn");
+  } else {
+    setNotePanelAiStatus("Checking", "dim");
+  }
+
+  syncAiPanelControls();
+}
+
+function abortAiChatStream() {
+  if (notePanelState.aiStreamController) {
+    notePanelState.aiStreamController.abort();
+    notePanelState.aiStreamController = null;
+  }
+}
+
+function syncUpdatedNoteAcrossScene(previousId, previousPath, updatedNote) {
+  const matchesNote = (candidate) =>
+    candidate &&
+    (candidate.id === previousId ||
+      normalizeNoteId(candidate.name || "") === previousId ||
+      candidate.path === previousPath);
+
+  buildingObjects.forEach((mesh) => {
+    const note = mesh.userData?.note;
+    if (!matchesNote(note)) return;
+    Object.assign(note, updatedNote);
+    note.linkCount = updatedNote.linkCount || updatedNote.links?.length || 0;
+    note.color = updatedNote.color || colorForTags(updatedNote.tags || []);
+    mesh.material.color.set(note.color);
+  });
+
+  searchIndex.forEach((entry) => {
+    if (!matchesNote(entry.note)) return;
+    Object.assign(entry.note, updatedNote);
+    entry.note.linkCount = updatedNote.linkCount || updatedNote.links?.length || 0;
+    entry.note.color = updatedNote.color || colorForTags(updatedNote.tags || []);
+  });
+
+  notePreviewCache[previousId] = null;
+  notePreviewCache[updatedNote.id] = null;
+}
+
+async function runAiOrganization() {
+  if (!activePanelNote || notePanelState.aiBusy) return;
+
+  const enabled = await ensureAiAvailability();
+  if (!enabled) return;
+
+  notePanelState.aiBusy = true;
+  setNotePanelAiStatus("Analyzing", "warn");
+  renderAiResults();
+
+  try {
+    const payload = {
+      noteId: activePanelNote.id || normalizeNoteId(activePanelNote.name),
+      objective: document.getElementById("np-ai-objective").value.trim() || null,
+    };
+    const data = await fetchJson(`${AI_API}/note/organize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    notePanelState.aiDraft = data.organization || null;
+    setNotePanelAiStatus("Draft ready", "ok");
+    renderAiResults();
+    showToastMsg(`✨ Gemini organized: ${activePanelNote.name}`);
+  } catch (err) {
+    notePanelState.aiDraft = null;
+    setNotePanelAiStatus("Failed", "error");
+    renderAiResults();
+    showToastMsg(`AI error: ${err.message}`);
+  } finally {
+    notePanelState.aiBusy = false;
+    syncAiPanelControls();
+  }
+}
+
+async function applyAiDraft() {
+  if (!activePanelNote || !notePanelState.aiDraft || notePanelState.aiBusy) return;
+  if (!confirm("Apply the current Gemini draft to this note?")) return;
+
+  const enabled = await ensureAiAvailability();
+  if (!enabled) return;
+
+  notePanelState.aiBusy = true;
+  setNotePanelAiStatus("Applying", "warn");
+  syncAiPanelControls();
+
+  const previousId = activePanelNote.id || normalizeNoteId(activePanelNote.name);
+  const previousPath = activePanelNote.path;
+  const draft = notePanelState.aiDraft;
+
+  try {
+    const applied = await fetchJson(`${AI_API}/note/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        noteId: previousId,
+        title: draft.refinedTitle || activePanelNote.name,
+        content: draft.rewriteMarkdown || notePanelState.currentContent || "",
+        folder: draft.suggestedFolder || null,
+        tags: draft.suggestedTags || [],
+      }),
     });
 
-  document.getElementById("note-panel").classList.add("open");
+    const updated = await fetchJson(`${API}/note/${applied.note.id}`);
+    const mergedNote = {
+      ...activePanelNote,
+      ...updated,
+      id: updated.id,
+      name: updated.name,
+      path: updated.path,
+      tags: updated.tags || [],
+      links: updated.links || [],
+      wordCount: updated.wordCount || 0,
+      linkCount: updated.links?.length || 0,
+      color: colorForTags(updated.tags || []),
+    };
+
+    syncUpdatedNoteAcrossScene(previousId, previousPath, mergedNote);
+    setNotePanelAiStatus("Applied", "ok");
+    notePanelState.aiDraft = null;
+    openNotePanel(mergedNote);
+    showToastMsg(`✅ Applied AI draft: ${mergedNote.name}`);
+  } catch (err) {
+    setNotePanelAiStatus("Apply failed", "error");
+    showToastMsg(`AI apply failed: ${err.message}`);
+  } finally {
+    notePanelState.aiBusy = false;
+    renderAiResults();
+  }
+}
+
+async function askAiAboutCurrentNote() {
+  if (!activePanelNote || notePanelState.aiBusy) return;
+  const question = document.getElementById("np-ai-question").value.trim();
+  if (!question) {
+    showToastMsg("Enter a question for Gemini first");
+    return;
+  }
+
+  const enabled = await ensureAiAvailability();
+  if (!enabled) return;
+
+  notePanelState.aiBusy = true;
+  notePanelState.aiChat = {
+    answer: "",
+    suggestedActions: [],
+    focusNoteIds: [],
+  };
+  setNotePanelAiStatus("Streaming", "warn");
+  renderAiResults();
+
+  const controller = new AbortController();
+  notePanelState.aiStreamController = controller;
+
+  try {
+    const response = await fetch(`${AI_API}/chat/stream`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        noteId: activePanelNote.id || normalizeNoteId(activePanelNote.name),
+      }),
+    });
+
+    if (!response.ok) {
+      let errorBody = null;
+      try {
+        errorBody = await response.json();
+      } catch {}
+      throw new Error(
+        errorBody?.message || errorBody?.error || `Request failed with HTTP ${response.status}`,
+      );
+    }
+
+    if (!response.body) {
+      throw new Error("Streaming response body is not available");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+
+      for (const eventBlock of events) {
+        const dataLine = eventBlock
+          .split("\n")
+          .find((line) => line.startsWith("data: "));
+        if (!dataLine) continue;
+
+        const payload = JSON.parse(dataLine.slice(6));
+        if (payload.type === "chunk") {
+          notePanelState.aiChat.answer = payload.fullText || notePanelState.aiChat.answer;
+          renderAiResults();
+        } else if (payload.type === "done") {
+          setNotePanelAiStatus("Answered", "ok");
+        } else if (payload.type === "error") {
+          throw new Error(payload.message || "Unknown streaming error");
+        }
+      }
+    }
+
+    renderAiResults();
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error("Unknown AI error");
+    if (error.name === "AbortError") {
+      return;
+    }
+    setNotePanelAiStatus("Ask failed", "error");
+    showToastMsg(`AI question failed: ${error.message}`);
+  } finally {
+    notePanelState.aiStreamController = null;
+    notePanelState.aiBusy = false;
+    syncAiPanelControls();
+  }
+}
+
+function renderAuditIssueList(items = []) {
+  if (!items.length) {
+    return '<div class="np-empty">No issues in this section.</div>';
+  }
+
+  return `<div class="ai-audit-list">${items
+    .map(
+      (item) => `
+        <div class="ai-audit-item">
+          <div class="ai-audit-item-head">
+            <button type="button" class="ai-audit-note-btn" data-ai-focus-note="${escapeHtml(item.noteId || "")}">
+              <strong dir="auto">${escapeHtml(item.noteName || item.noteId || "Note")}</strong>
+            </button>
+            <span class="ai-audit-priority">${escapeHtml(item.priority || "medium")}</span>
+          </div>
+          <div dir="auto">${escapeHtml(item.reason || "")}</div>
+          <div class="ai-audit-dupe-notes">${escapeHtml(item.folder || "")}</div>
+        </div>`,
+    )
+    .join("")}</div>`;
+}
+
+function renderVaultAudit() {
+  const body = document.getElementById("ai-audit-body");
+  if (!body) return;
+
+  if (notePanelState.aiEnabled === false) {
+    body.innerHTML =
+      '<div class="np-empty">Gemini AI is disabled. Add `GEMINI_API_KEY` to enable vault audits.</div>';
+    return;
+  }
+
+  if (vaultAuditState.isLoading) {
+    body.innerHTML =
+      '<div class="np-empty">Gemini is auditing the vault structure, tags, duplicates, and folder layout.</div>';
+    return;
+  }
+
+  if (!vaultAuditState.report) {
+    body.innerHTML =
+      '<div class="np-empty">Run `AI Audit` to inspect the vault for missing tags, weak names, orphan notes, duplicates, and folder cleanup opportunities.</div>';
+    return;
+  }
+
+  const audit = vaultAuditState.report;
+  body.innerHTML = `
+    <div class="ai-audit-card">
+      <h3>Summary</h3>
+      <div class="np-ai-value" dir="auto">${escapeHtml(audit.summary || "")}</div>
+      <div class="ai-audit-dupe-notes">Sampled ${vaultAuditState.sampleSize} notes for this audit.</div>
+    </div>
+    <div class="ai-audit-card">
+      <h3>Quick Wins</h3>
+      ${renderAiList(audit.quickWins || [])}
+    </div>
+    <div class="ai-audit-grid">
+      <div class="ai-audit-card">
+        <h3>Missing Tags</h3>
+        ${renderAuditIssueList(audit.missingTags || [])}
+      </div>
+      <div class="ai-audit-card">
+        <h3>Orphan Notes</h3>
+        ${renderAuditIssueList(audit.orphanNotes || [])}
+      </div>
+      <div class="ai-audit-card">
+        <h3>Naming Issues</h3>
+        ${renderAuditIssueList(audit.namingIssues || [])}
+      </div>
+      <div class="ai-audit-card">
+        <h3>Folder Suggestions</h3>
+        ${
+          (audit.folderSuggestions || []).length
+            ? `<div class="ai-audit-list">${audit.folderSuggestions
+                .map(
+                  (item) => `
+                    <div class="ai-audit-item">
+                      <div class="ai-audit-item-head">
+                        <strong dir="auto">${escapeHtml(item.folder || "Folder")}</strong>
+                      </div>
+                      <div dir="auto">${escapeHtml(item.issue || "")}</div>
+                      <div class="ai-audit-dupe-notes" dir="auto">${escapeHtml(item.suggestion || "")}</div>
+                    </div>`,
+                )
+                .join("")}</div>`
+            : '<div class="np-empty">No folder-level changes suggested.</div>'
+        }
+      </div>
+    </div>
+    <div class="ai-audit-card">
+      <h3>Duplicate Candidates</h3>
+      ${
+        (audit.duplicateCandidates || []).length
+          ? `<div class="ai-audit-list">${audit.duplicateCandidates
+              .map(
+                (item) => `
+                  <div class="ai-audit-item">
+                    <div class="ai-audit-dupe-notes" dir="auto">${escapeHtml((item.noteNames || []).join(" • "))}</div>
+                    <div dir="auto">${escapeHtml(item.reason || "")}</div>
+                  </div>`,
+              )
+              .join("")}</div>`
+          : '<div class="np-empty">No duplicate candidates detected in the sampled notes.</div>'
+      }
+    </div>
+  `;
+}
+
+async function runVaultAudit() {
+  const enabled = await ensureAiAvailability();
+  document.getElementById("ai-audit-modal").classList.add("open");
+  if (!enabled) {
+    renderVaultAudit();
+    return;
+  }
+
+  vaultAuditState.isLoading = true;
+  renderVaultAudit();
+
+  try {
+    const data = await fetchJson(`${AI_API}/vault/audit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 120 }),
+    });
+    vaultAuditState.report = data.audit || null;
+    vaultAuditState.sampleSize = data.sampleSize || 0;
+    showToastMsg("✨ Vault audit updated");
+  } catch (err) {
+    vaultAuditState.report = null;
+    showToastMsg(`AI audit failed: ${err.message}`);
+  } finally {
+    vaultAuditState.isLoading = false;
+    renderVaultAudit();
+  }
+}
+
+function openVaultAudit() {
+  document.getElementById("ai-audit-modal").classList.add("open");
+  renderVaultAudit();
+  ensureAiAvailability().then((enabled) => {
+    if (enabled && !vaultAuditState.report && !vaultAuditState.isLoading) {
+      runVaultAudit();
+      return;
+    }
+    renderVaultAudit();
+  });
+}
+
+function closeVaultAudit() {
+  document.getElementById("ai-audit-modal").classList.remove("open");
+}
+
+function getNotePanelMaxWidth() {
+  return Math.max(340, Math.min(window.innerWidth * 0.82, 820));
+}
+
+function setNotePanelWidth(width, persist = true) {
+  const panel = document.getElementById("note-panel");
+  if (!panel) return;
+
+  if (window.innerWidth <= 900) {
+    panel.style.removeProperty("--np-panel-width");
+    return;
+  }
+
+  const clamped = Math.max(340, Math.min(getNotePanelMaxWidth(), width));
+  notePanelState.resizeWidth = clamped;
+  panel.style.setProperty("--np-panel-width", `${Math.round(clamped)}px`);
+
+  if (persist) {
+    localStorage.setItem(NOTE_PANEL_WIDTH_KEY, String(Math.round(clamped)));
+  }
+}
+
+function syncNotePanelWidth() {
+  const saved = Number.parseInt(localStorage.getItem(NOTE_PANEL_WIDTH_KEY), 10);
+  const fallback = Number.isFinite(saved) ? saved : notePanelState.resizeWidth;
+  setNotePanelWidth(fallback, false);
+}
+
+function setPanelContentExpanded(expanded) {
+  notePanelState.isExpanded = expanded;
+  const panel = document.getElementById("note-panel");
+  const expandBtn = document.getElementById("np-expand-btn");
+  const content = document.getElementById("np-content");
+  panel.classList.toggle("is-content-expanded", expanded);
+  expandBtn.textContent = expanded ? "Collapse" : "Expand";
+  expandBtn.setAttribute("aria-pressed", expanded ? "true" : "false");
+  if (expanded) {
+    panel.scrollTop = 0;
+    content.scrollTop = 0;
+  }
+}
+
+function applyNotePanelDirection(note = {}, content = "") {
+  const titleDir = detectTextDirection(note.name || "");
+  const contentDir = detectTextDirection(`${note.name || ""}\n${content}`);
+
+  notePanelState.detectedDirection = contentDir;
+  document.getElementById("np-title").dir = titleDir;
+  document.getElementById("np-summary").dir = contentDir;
+  document.getElementById("np-content").dir = contentDir;
+}
+
+function findNoteEntry(noteRef) {
+  const noteId = normalizeNoteId(noteRef);
+  const mesh = buildingObjects.find(
+    (building) => building.userData?.note?.id === noteId,
+  );
+  if (mesh?.userData?.note) {
+    return { note: mesh.userData.note, mesh };
+  }
+
+  const entry = searchIndex.find(
+    (item) =>
+      item.note?.id === noteId ||
+      normalizeNoteId(item.note?.name || "") === noteId,
+  );
+
+  if (entry?.note) {
+    return { note: entry.note, mesh: entry.mesh || null };
+  }
+
+  return null;
+}
+
+function focusNoteTarget(noteRef, toastLabel = null) {
+  const entry =
+    typeof noteRef === "object" && noteRef?.id
+      ? {
+          note: noteRef,
+          mesh:
+            buildingObjects.find(
+              (building) => building.userData?.note?.id === noteRef.id,
+            ) || null,
+        }
+      : findNoteEntry(noteRef);
+
+  if (!entry?.mesh || !car) return false;
+
+  const { mesh, note } = entry;
+  const target = mesh.position;
+  const dist = (mesh.userData?.note?.linkCount * 2.8) / 2 + 20;
+  drv.collisionCooldown = 35;
+  drv.speed = 0;
+  drv.steer = 0;
+  drv.verticalV = 0;
+  placeCarSafely(target.x + dist, target.z + dist);
+  drv.angle = Math.atan2(target.x - car.position.x, target.z - car.position.z);
+
+  if (toastLabel) showToastMsg(`${toastLabel}${note?.name || ""}`);
+  return true;
+}
+
+function openLinkedNote(noteRef) {
+  const entry = findNoteEntry(noteRef);
+  if (!entry?.note) {
+    showToastMsg("Linked note not found in the current vault");
+    return;
+  }
+  openNotePanel(entry.note);
+}
+
+function openNotePanel(note) {
+  activePanelNote = note;
+  const panel = document.getElementById("note-panel");
+  const pathLabel = formatRelativeNotePath(note.path || "");
+  panel.style.setProperty("--np-accent", note.color || "#00c8ff");
+  setPanelContentExpanded(false);
+  resetAiPanelState();
+
+  document.getElementById("np-title").textContent = note.name || "Untitled";
+  document.getElementById("np-path").textContent = pathLabel || "Vault note";
+  document.getElementById("np-path").dir = "ltr";
+  document.getElementById("np-summary").textContent = buildNoteSummary("", note);
+  document.getElementById("np-meta").innerHTML = renderPanelMeta(note);
+  document.getElementById("np-tags").innerHTML = renderPanelTags(note.tags || []);
+  document.getElementById("np-links").innerHTML = renderPanelLinks(note.links || []);
+  document.getElementById("np-links-count").textContent = `${
+    note.links?.length || 0
+  } links`;
+  document.getElementById("np-content-status").textContent = "Loading";
+  document.getElementById("np-content").innerHTML =
+    '<div class="np-empty">Loading note content...</div>';
+  applyNotePanelDirection(note, note.name || "");
+
+  // fetch note content
+  const noteId = note.id || normalizeNoteId(note.name);
+  const requestId = ++notePanelRequestId;
+  fetch(`${API}/note/${noteId}`)
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((d) => {
+      if (requestId !== notePanelRequestId) return;
+
+      note.tags = d.tags?.length ? d.tags : note.tags || [];
+      note.links = d.links?.length ? d.links : note.links || [];
+
+      const cleanContent = stripFrontmatter(d.content || "");
+      notePanelState.currentContent = cleanContent;
+      document.getElementById("np-summary").textContent = buildNoteSummary(
+        cleanContent,
+        note,
+      );
+      document.getElementById("np-tags").innerHTML = renderPanelTags(
+        note.tags || [],
+      );
+      document.getElementById("np-links").innerHTML = renderPanelLinks(
+        note.links || [],
+      );
+      document.getElementById("np-links-count").textContent = `${
+        note.links?.length || 0
+      } links`;
+      document.getElementById("np-content-status").textContent = `${
+        cleanContent.split(/\s+/).filter(Boolean).length || 0
+      } words`;
+      document.getElementById("np-content").innerHTML = renderNoteContent(
+        cleanContent,
+      );
+      applyNotePanelDirection(note, cleanContent);
+    })
+    .catch(() => {
+      if (requestId !== notePanelRequestId) return;
+      notePanelState.currentContent = "";
+      document.getElementById("np-content-status").textContent = "Unavailable";
+      document.getElementById("np-content").innerHTML =
+        '<div class="np-empty">Failed to load note content.</div>';
+      applyNotePanelDirection(note, note.name || "");
+    });
+
+  panel.classList.add("open");
+  ensureAiAvailability();
 }
 function closePanel() {
+  abortAiChatStream();
+  activePanelNote = null;
+  notePanelRequestId++;
+  notePanelState.currentContent = "";
   document.getElementById("note-panel").classList.remove("open");
 }
+
+document.getElementById("note-panel").addEventListener("click", (e) => {
+  const linkTarget = e.target.closest("[data-note-link]");
+  if (linkTarget) {
+    e.preventDefault();
+    openLinkedNote(decodeNoteRef(linkTarget.dataset.noteLink || ""));
+    return;
+  }
+
+  const action = e.target.closest("[data-panel-action]");
+  if (!action || !activePanelNote) return;
+
+  if (action.dataset.panelAction === "locate") {
+    focusNoteTarget(activePanelNote, "✈️ Teleported to: ");
+  } else if (action.dataset.panelAction === "enter") {
+    enterBuilding(activePanelNote);
+  } else if (action.dataset.panelAction === "toggle-expand") {
+    setPanelContentExpanded(!notePanelState.isExpanded);
+  } else if (action.dataset.panelAction === "ai-organize") {
+    runAiOrganization();
+  } else if (action.dataset.panelAction === "ai-apply") {
+    applyAiDraft();
+  } else if (action.dataset.panelAction === "ai-ask") {
+    askAiAboutCurrentNote();
+  }
+});
+
+document.getElementById("np-ai-question").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    askAiAboutCurrentNote();
+  }
+});
+
+document.getElementById("ai-audit-modal").addEventListener("click", (e) => {
+  if (e.target === document.getElementById("ai-audit-modal")) {
+    closeVaultAudit();
+    return;
+  }
+
+  const noteBtn = e.target.closest("[data-ai-focus-note]");
+  if (!noteBtn) return;
+  const entry = findNoteEntry(noteBtn.dataset.aiFocusNote || "");
+  if (!entry?.note) {
+    showToastMsg("Audit note not found in current scene");
+    return;
+  }
+  closeVaultAudit();
+  openNotePanel(entry.note);
+});
+
+const notePanelResizeHandle = document.getElementById("np-resize-handle");
+
+function handleNotePanelResizeMove(e) {
+  if (!notePanelState.resizeActive) return;
+  const nextWidth = window.innerWidth - e.clientX;
+  setNotePanelWidth(nextWidth, false);
+}
+
+function handleNotePanelResizeEnd() {
+  if (!notePanelState.resizeActive) return;
+  notePanelState.resizeActive = false;
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  localStorage.setItem(
+    NOTE_PANEL_WIDTH_KEY,
+    String(Math.round(notePanelState.resizeWidth)),
+  );
+  window.removeEventListener("pointermove", handleNotePanelResizeMove);
+  window.removeEventListener("pointerup", handleNotePanelResizeEnd);
+}
+
+notePanelResizeHandle.addEventListener("pointerdown", (e) => {
+  if (window.innerWidth <= 900) return;
+  e.preventDefault();
+  notePanelState.resizeActive = true;
+  document.body.style.cursor = "ew-resize";
+  document.body.style.userSelect = "none";
+  window.addEventListener("pointermove", handleNotePanelResizeMove);
+  window.addEventListener("pointerup", handleNotePanelResizeEnd);
+});
+
+window.addEventListener("resize", () => {
+  syncNotePanelWidth();
+});
+
+syncNotePanelWidth();
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const panel = document.getElementById("note-panel");
+    if (panel.classList.contains("open")) closePanel();
+  }
+});
 
 // ── MINIMAP ──────────────────────────────────────────────────────────────────
 const mm = document.getElementById("minimap").getContext("2d");
@@ -1678,14 +2952,14 @@ async function init() {
     addTrees(100); // major reduction
     buildHighways(data.cities || [], data.highwayConnections || []);
     (data.cities || []).forEach(buildCity);
+    buildSearchIndex(data.cities || []);
     buildMMCache(data.cities || []); // ← new
     buildCar();
     const firstCity = data.cities?.[0];
     if (firstCity?.position) {
       const cityR = firstCity._radius || 80;
-      car.position.set(
+      placeCarSafely(
         firstCity.position.x + cityR + 30,
-        0,
         firstCity.position.z,
       );
       drv.angle = Math.PI;
@@ -1721,8 +2995,12 @@ async function init() {
 
 // ── ANIMATE LOOP ──────────────────────────────────────────────────────────────
 let frameCount = 0;
-function animate() {
+let lastFrameTime = performance.now();
+function animate(now = performance.now()) {
   requestAnimationFrame(animate);
+  const dtMs = Math.min(40, Math.max(8, now - lastFrameTime || 16.67));
+  lastFrameTime = now;
+  const frameFactor = dtMs / 16.67;
   frameCount++;
 
   if (car) {
@@ -1732,30 +3010,69 @@ function animate() {
       rgt = K["ArrowRight"] || K["KeyD"];
     const space = K["Space"]; // for strong braking
     const jump = K["KeyZ"]; // for jumping
+    const turbo = K["KeyF"];
 
-    // Enhanced physics with friction
-    if (fwd) drv.speed = Math.min(drv.speed + drv.acc, drv.maxV);
-    else if (bwd) drv.speed = Math.max(drv.speed - drv.brk, -drv.maxV * 0.5);
-    else if (space)
-      drv.speed *= 0.88; // very strong braking
-    else {
-      // Natural friction
-      if (drv.speed > 0)
-        drv.speed = Math.max(0, drv.speed * drv.friction - drv.dec);
-      else if (drv.speed < 0)
-        drv.speed = Math.min(0, drv.speed * drv.friction + drv.dec);
+    if (drv.collisionCooldown > 0) {
+      drv.collisionCooldown = Math.max(0, drv.collisionCooldown - frameFactor);
+      if (drv.collisionCooldown === 0) {
+        const safe = resolveCollisionPenetration(car.position.clone());
+        car.position.x = safe.position.x;
+        car.position.z = safe.position.z;
+      }
     }
+    if (drv.impactCooldown > 0)
+      drv.impactCooldown = Math.max(0, drv.impactCooldown - frameFactor);
+
+    const maxForwardSpeed = drv.maxV * (turbo ? drv.turboMultiplier : 1);
+    const maxReverseSpeed = drv.maxV * 0.45;
+
+    if (fwd) {
+      if (drv.speed < -0.04) {
+        drv.speed = Math.min(drv.speed + drv.brk * 1.15 * frameFactor, 0);
+      } else {
+        const accelScale =
+          1 -
+          Math.min(
+            0.45,
+            (Math.abs(drv.speed) / Math.max(maxForwardSpeed, 0.001)) * 0.35,
+          );
+        drv.speed = Math.min(
+          drv.speed + drv.acc * accelScale * (turbo ? 1.12 : 1) * frameFactor,
+          maxForwardSpeed,
+        );
+      }
+    } else if (bwd) {
+      if (drv.speed > 0.04) {
+        drv.speed = Math.max(drv.speed - drv.brk * 1.05 * frameFactor, 0);
+      } else {
+        drv.speed = Math.max(
+          drv.speed - drv.reverseAcc * frameFactor,
+          -maxReverseSpeed,
+        );
+      }
+    } else if (space) {
+      drv.speed = approachValue(drv.speed, 0, drv.brk * 1.6 * frameFactor);
+    } else {
+      drv.speed *= Math.pow(drv.friction, frameFactor);
+      drv.speed = approachValue(drv.speed, 0, drv.dec * frameFactor);
+    }
+
+    if (Math.abs(drv.speed) < 0.002) drv.speed = 0;
+
+    const steeringInput = (lft ? 1 : 0) + (rgt ? -1 : 0);
+    const steerBlend = Math.min(1, drv.steerResponse * frameFactor);
+    drv.steer += (steeringInput - drv.steer) * steerBlend;
 
     // Jump mechanic
     if (jump && !drv.isAirborne) {
-      drv.verticalV = 0.45;
+      drv.verticalV = drv.jumpForce;
       drv.isAirborne = true;
       playJumpSound();
     }
 
     // Gravity
-    drv.verticalV -= 0.025;
-    car.position.y += drv.verticalV;
+    drv.verticalV -= drv.gravity * frameFactor;
+    car.position.y += drv.verticalV * frameFactor;
 
     // Ground collision
     if (car.position.y <= 0) {
@@ -1764,41 +3081,51 @@ function animate() {
       drv.isAirborne = false;
     }
 
-    // Wheel turning (only when moving)
-    if (Math.abs(drv.speed) > 0.008) {
-      if (lft) drv.angle += drv.turn * Math.sign(drv.speed);
-      if (rgt) drv.angle -= drv.turn * Math.sign(drv.speed);
+    // Speed-sensitive steering with reduced control while airborne
+    const speedRatio = Math.min(
+      1,
+      Math.abs(drv.speed) / Math.max(maxForwardSpeed, 0.001),
+    );
+    const traction = drv.isAirborne ? 0.22 : 1;
+    const turnRate = THREE.MathUtils.lerp(drv.turn, drv.turnFast, speedRatio);
+    if (Math.abs(drv.speed) > 0.004 || Math.abs(drv.steer) > 0.05) {
+      drv.angle +=
+        drv.steer *
+        turnRate *
+        (0.7 + (1 - speedRatio) * 0.6) *
+        Math.sign(drv.speed || 1) *
+        traction *
+        frameFactor;
+
+      const steeringDrag = Math.abs(drv.steer) * speedRatio * 0.007 * frameFactor;
+      drv.speed *= Math.max(0.88, 1 - steeringDrag);
     }
     car.rotation.y = drv.angle;
 
-    // Calculate new position
-    const nextX = car.position.x + Math.sin(drv.angle) * drv.speed;
-    const nextZ = car.position.z + Math.cos(drv.angle) * drv.speed;
-    const nextPos = new THREE.Vector3(nextX, car.position.y, nextZ);
-
-    // Check collision before moving
-    // reduce cooldown every frame
-    if (drv.collisionCooldown > 0) drv.collisionCooldown--;
+    const moveVec = new THREE.Vector3(
+      Math.sin(drv.angle) * drv.speed * frameFactor,
+      0,
+      Math.cos(drv.angle) * drv.speed * frameFactor,
+    );
 
     if (drv.collisionCooldown > 0) {
-      // during cooldown: ignore collision completely (allows escape)
-      car.position.x = nextX;
-      car.position.z = nextZ;
-    } else if (!checkCollision(nextPos)) {
-      // no collision: move freely
-      car.position.x = nextX;
-      car.position.z = nextZ;
+      car.position.x += moveVec.x;
+      car.position.z += moveVec.z;
+    } else {
+      const moveResult = moveWithCollision(car.position, moveVec);
+      car.position.x = moveResult.position.x;
+      car.position.z = moveResult.position.z;
 
       // dust particles while moving
-      if (Math.abs(drv.speed) > 0.1) {
+      if (!moveResult.collided && Math.abs(drv.speed) > 0.1 && !drv.isAirborne) {
         for (let i = 0; i < 2; i++) {
           const angle = Math.random() * Math.PI * 2;
           const dist = 2 + Math.random() * 1.5;
           createParticle(
             new THREE.Vector3(
-              nextX + Math.cos(angle) * dist,
+              car.position.x + Math.cos(angle) * dist,
               0.5,
-              nextZ + Math.sin(angle) * dist,
+              car.position.z + Math.sin(angle) * dist,
             ),
             new THREE.Vector3(
               Math.cos(angle) * 0.015,
@@ -1807,17 +3134,40 @@ function animate() {
             ),
           );
         }
+      } else if (moveResult.collided) {
+        const moveLen = moveVec.length();
+        const hit = moveResult.hit;
+        const impact =
+          hit && moveLen > 0.0001
+            ? Math.max(
+                0,
+                -(
+                  (moveVec.x / moveLen) * hit.normalX +
+                  (moveVec.z / moveLen) * hit.normalZ
+                ),
+              )
+            : 0.35;
+        const blockedRatio =
+          moveLen > 0.0001
+            ? 1 - Math.min(1, moveResult.travelled / moveLen)
+            : 0.5;
+        const speedLoss = Math.min(
+          0.78,
+          impact * 0.55 + blockedRatio * 0.45,
+        );
+        drv.speed *= Math.max(0, 1 - speedLoss);
+        if (Math.abs(drv.speed) < 0.03) drv.speed = 0;
+
+        if (drv.impactCooldown <= 0) {
+          triggerCameraShake(0.12 + impact * 0.18, 90 + impact * 120);
+          playCollisionSound(0.3 + impact * 0.5);
+          drv.impactCooldown = 8;
+        }
       }
-    } else {
-      // collision: stop speed + start cooldown (no bounce)
-      drv.speed = 0;
-      drv.collisionCooldown = 25; // ~0.4 seconds at 60fps
-      triggerCameraShake(0.2, 120);
-      playCollisionSound(0.4);
     }
 
     // Update particles
-    updateParticles();
+    updateParticles(frameFactor);
 
     // 3rd-person camera with enhanced smoothing
     const cp = car.position;
@@ -1831,7 +3181,7 @@ function animate() {
     );
 
     // Smooth lerp with frame-rate independent damping
-    camera.position.lerp(camT, 0.08);
+    camera.position.lerp(camT, 1 - Math.pow(0.92, frameFactor));
 
     // Look ahead of car
     const lookAheadDist = 15 + Math.abs(drv.speed) * 5;
@@ -1847,12 +3197,12 @@ function animate() {
       camera.position.x += (Math.random() - 0.5) * shakeAmount;
       camera.position.y += (Math.random() - 0.5) * shakeAmount;
       camera.position.z += (Math.random() - 0.5) * shakeAmount;
-      cameraShake.duration -= 16;
+      cameraShake.duration -= dtMs;
     }
 
     // Apply glow to selected building
     if (selectedBuilding) {
-      buildingGlowTime -= 16;
+      buildingGlowTime -= dtMs;
       const progress = buildingGlowTime / 600;
       selectedBuilding.material.emissiveIntensity = 0.3 + progress * 0.4;
       if (buildingGlowTime <= 0) {
@@ -1940,7 +3290,18 @@ function buildSearchIndex(cities) {
 
 let searchActiveIdx = 0;
 
+function ensureSearchIndex(force = false) {
+  if (!vaultData || !Array.isArray(vaultData.cities) || !buildingObjects.length)
+    return;
+
+  const hasUsableMesh = searchIndex.some((entry) => entry.mesh);
+  if (!force && searchIndex.length > 0 && hasUsableMesh) return;
+
+  buildSearchIndex(vaultData.cities || []);
+}
+
 function openSearch() {
+  ensureSearchIndex();
   const overlay = document.getElementById("search-overlay");
   overlay.classList.add("open");
   document.getElementById("search-input").value = "";
@@ -1953,6 +3314,7 @@ function closeSearch() {
 }
 
 function renderSearchResults(query) {
+  ensureSearchIndex();
   const container = document.getElementById("search-results");
   const q = query.trim().toLowerCase();
   const results = q
@@ -1988,9 +3350,11 @@ function searchTeleport(idx) {
   if (mesh && car) {
     const target = mesh.position;
     const dist = (mesh.userData?.note?.linkCount * 2.8) / 2 + 20;
-    drv.collisionCooldown = 50;
+    drv.collisionCooldown = 35;
     drv.speed = 0;
-    car.position.set(target.x + dist, 0, target.z + dist);
+    drv.steer = 0;
+    drv.verticalV = 0;
+    placeCarSafely(target.x + dist, target.z + dist);
     drv.angle = Math.atan2(
       target.x - car.position.x,
       target.z - car.position.z,
@@ -2184,10 +3548,12 @@ function teleportToCity(valStr) {
   if (!valStr || !car) return;
   try {
     const { x, z } = JSON.parse(valStr);
-    drv.collisionCooldown = 50;
+    drv.collisionCooldown = 35;
     drv.speed = 0;
+    drv.steer = 0;
+    drv.verticalV = 0;
     const cityR = 80;
-    car.position.set(x + cityR + 30, 0, z);
+    placeCarSafely(x + cityR + 30, z);
     drv.angle = Math.PI;
     showToastMsg("🏙️ Moved to city");
   } catch (e) {}
@@ -2646,6 +4012,8 @@ document.addEventListener("keydown", (e) => {
       closeSearch();
     if (document.getElementById("stats-modal").classList.contains("open"))
       closeStats();
+    if (document.getElementById("ai-audit-modal").classList.contains("open"))
+      closeVaultAudit();
     if (document.getElementById("create-note-modal").classList.contains("open"))
       closeCreateNote();
   }
@@ -2856,6 +4224,7 @@ window.buildLegend = function () {
 
 // ── FIX-2: Search — safe open/render with null guard ────────────
 window.openSearch = function () {
+  ensureSearchIndex();
   const overlay = document.getElementById("search-overlay");
   if (!overlay) return;
   overlay.classList.add("open");
@@ -2868,6 +4237,7 @@ window.openSearch = function () {
 };
 
 window.renderSearchResults = function (query) {
+  ensureSearchIndex();
   const container = document.getElementById("search-results");
   if (!container) return;
   const q = (query || "").trim().toLowerCase();

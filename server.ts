@@ -17,10 +17,10 @@ import { swaggerSpec } from "./swagger";
 import { authMiddleware, initJwt, generateToken, isJwtEnabled } from "./auth";
 
 // Config validation
-import { initConfig } from "./config";
+import { getConfig } from "./config";
 
 // Initialize config (exits on failure)
-const config = initConfig();
+const config = getConfig();
 
 // Structured logging with Pino
 import pino from "pino";
@@ -42,6 +42,7 @@ const apiLimiter = rateLimit({
 });
 
 import vaultRouter from "./routes/vault";
+import aiRouter from "./routes/ai";
 
 const app: Express = express();
 const server = http.createServer(app);
@@ -76,6 +77,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 // ── API ROUTES ─────────────────────────────────────────────────────────────────
 app.use("/api/vault", vaultRouter);
+app.use("/api/ai", aiRouter);
 
 // ── SWAGGER DOCS ─────────────────────────────────────────────────────────────
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

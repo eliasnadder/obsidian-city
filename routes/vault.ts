@@ -45,13 +45,13 @@ const CACHE_KEYS = {
   FOLDERS: "vault:folders"
 };
 
-function invalidateCache(): void {
+export function invalidateCache(): void {
   Object.values(CACHE_KEYS).forEach(key => cache.del(key));
 }
 
 // ── TYPES ─────────────────────────────────────────────────────────────────────
 
-interface Note {
+export interface Note {
   id: string;
   name: string;
   path: string;
@@ -64,7 +64,7 @@ interface Note {
   inboundLinks?: number;
 }
 
-interface FolderNode {
+export interface FolderNode {
   id: string;
   name: string;
   path: string;
@@ -76,13 +76,13 @@ interface FolderNode {
   _radius?: number;
 }
 
-interface Position {
+export interface Position {
   x: number;
   z: number;
   y: number;
 }
 
-interface SearchResult {
+export interface SearchResult {
   id: string;
   name: string;
   path: string;
@@ -102,6 +102,18 @@ interface CityData extends FolderNode {
 interface Connection {
   from: string | number;
   to: string | number;
+}
+
+export interface NoteDetails {
+  id: string;
+  name: string;
+  path: string;
+  folder: string;
+  content: string;
+  links: string[];
+  tags: string[];
+  color: string;
+  wordCount: number;
 }
 
 // ── INPUT VALIDATION SCHEMAS ─────────────────────────────────────────────────
@@ -612,13 +624,101 @@ function searchNotes(tree: FolderNode, query: string, options: SearchOptions = {
 
 // ── HELPER: GET PARSED VAULT (with caching) ──────────────────────────────────
 
-interface VaultData {
+export interface VaultData {
   tree: FolderNode | null;
   index: Map<string, Note>;
   parseTime: number;
 }
 
-function getVaultData(): VaultData {
+export function getVaultPath(): string {
+  return VAULT_PATH;
+}
+
+export function findFolderPathByName(folderName: string, base = VAULT_PATH): string | null {
+  if (!folderName) return base;
+  if (!fs.existsSync(base)) return null;
+
+  const entries = fs.readdirSync(base, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || IGNORED_DIRS.has(entry.name)) continue;
+    const full = path.join(base, entry.name);
+    if (entry.name.toLowerCase() === folderName.toLowerCase()) {
+      return full;
+    }
+    const found = findFolderPathByName(folderName, full);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+interface NoteInfo {
+  path: string;
+  name: string;
+}
+
+export function findNoteFileById(id: string, dirPath = VAULT_PATH): NoteInfo | null {
+  if (!fs.existsSync(dirPath)) return null;
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (IGNORED_DIRS.has(entry.name)) continue;
+    const full = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      const found = findNoteFileById(id, full);
+      if (found) return found;
+    } else if (NOTE_EXTS.has(path.extname(entry.name).toLowerCase())) {
+      const baseName = path.basename(entry.name, path.extname(entry.name));
+      if (baseName.toLowerCase().replace(/\s+/g, "-") === id) {
+        return { path: full, name: baseName };
+      }
+    }
+  }
+
+  return null;
+}
+
+export function getNoteDetailsById(id: string): NoteDetails | null {
+  const note = findNoteFileById(id);
+  if (!note) return null;
+
+  const content = fs.readFileSync(note.path, "utf-8");
+  const tags = [
+    ...new Set([...extractFrontmatter(content).tags, ...extractTags(content)]),
+  ];
+
+  return {
+    id,
+    name: note.name,
+    path: note.path,
+    folder: path.dirname(note.path),
+    content,
+    links: extractWikilinks(content),
+    tags,
+    color: getColorForTags(tags),
+    wordCount: content.split(/\s+/).filter(Boolean).length,
+  };
+}
+
+export function flattenNotes(
+  tree: FolderNode | null,
+  folderPath = "",
+): Array<Note & { folder: string }> {
+  if (!tree) return [];
+
+  const currentFolder = folderPath ? `${folderPath}/${tree.name}` : tree.name;
+  const notes = (tree.notes || []).map((note) => ({
+    ...note,
+    folder: currentFolder,
+  }));
+
+  for (const subfolder of tree.subfolders || []) {
+    notes.push(...flattenNotes(subfolder, currentFolder));
+  }
+
+  return notes;
+}
+
+export function getVaultData(): VaultData {
   // Try cache first
   let tree: FolderNode | undefined = cache.get<FolderNode>(CACHE_KEYS.VAULT_DATA);
   let index: Map<string, Note> | undefined = cache.get<Map<string, Note>>(CACHE_KEYS.NOTE_INDEX);
@@ -992,46 +1092,22 @@ router.get("/search", (req: Request, res: Response) => {
  *         description: Note not found
  */
 router.get("/note/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
-  
-  interface NoteInfo {
-    path: string;
-    name: string;
-  }
-  
-  function findNote(dirPath: string): NoteInfo | null {
-    if (!fs.existsSync(dirPath)) return null;
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (IGNORED_DIRS.has(entry.name)) continue;
-      const full = path.join(dirPath, entry.name);
-      if (entry.isDirectory()) {
-        const found = findNote(full);
-        if (found) return found;
-      } else if (NOTE_EXTS.has(path.extname(entry.name).toLowerCase())) {
-        const baseName = path.basename(entry.name, path.extname(entry.name));
-        if (baseName.toLowerCase().replace(/\s+/g, "-") === id)
-          return { path: full, name: baseName };
-      }
-    }
-    return null;
-  }
-  const note = findNote(VAULT_PATH);
-  if (!note) return res.status(404).json({ error: "Note not found", id });
+  const id = String(req.params.id || "");
+
   try {
-    const content = fs.readFileSync(note.path, "utf-8");
+    const note = getNoteDetailsById(id);
+    if (!note) return res.status(404).json({ error: "Note not found", id });
+
     res.json({
-      id,
+      id: note.id,
       name: note.name,
       path: note.path,
-      content,
-      links: extractWikilinks(content),
-      tags: [
-        ...new Set([
-          ...extractFrontmatter(content).tags,
-          ...extractTags(content),
-        ]),
-      ],
+      folder: note.folder,
+      content: note.content,
+      links: note.links,
+      tags: note.tags,
+      color: note.color,
+      wordCount: note.wordCount,
     });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -1229,19 +1305,7 @@ router.post("/note", authMiddleware, (req: Request, res: Response) => {
     // find folder path
     let targetDir = VAULT_PATH;
     if (folder) {
-      function findDir(base: string): string | null {
-        if (!fs.existsSync(base)) return null;
-        const entries = fs.readdirSync(base, { withFileTypes: true });
-        for (const e of entries) {
-          if (!e.isDirectory()) continue;
-          const full = path.join(base, e.name);
-          if (e.name.toLowerCase() === folder.toLowerCase()) return full;
-          const found = findDir(full);
-          if (found) return found;
-        }
-        return null;
-      }
-      targetDir = findDir(VAULT_PATH) || VAULT_PATH;
+      targetDir = findFolderPathByName(folder, VAULT_PATH) || VAULT_PATH;
     }
 
     const fileName = name.replace(/[/\\?%*:|"<>]/g, "-") + ".md";

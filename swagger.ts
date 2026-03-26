@@ -30,6 +30,10 @@ const options: swaggerJsdoc.Options = {
       {
         name: "Health",
         description: "Server health and status"
+      },
+      {
+        name: "AI",
+        description: "Gemini-powered vault organization endpoints"
       }
     ],
     components: {

@@ -31,6 +31,9 @@ npm test
 ## Environment Requirements
 
 - `VAULT_PATH` is required and must point to an existing Obsidian vault.
+- `GEMINI_API_KEY` is optional. If left empty, Gemini organizer features stay disabled.
+- `GEMINI_MODEL` defaults to `gemini-2.5-flash`.
+- `AI_FEATURES_ENABLED=false` disables all AI routes without removing the API key.
 - `JWT_SECRET` is optional. If left empty, authentication stays disabled.
 - `JWT_SECRET` must be at least 32 characters long if you want JWT auth enabled.
 
@@ -42,6 +45,11 @@ npm test
 | `GET /api/vault`          | Full vault data: cities, buildings, links  |
 | `GET /api/vault/stats`    | Quick vault statistics                     |
 | `GET /api/vault/note/:id` | Contents of a specific note                |
+| `GET /api/ai/status`      | Gemini availability and selected model     |
+| `POST /api/ai/note/organize` | Analyze a note and generate an AI rewrite draft |
+| `POST /api/ai/note/apply` | Apply an approved AI draft to a note file  |
+| `POST /api/ai/vault/audit`| Audit vault structure, tags, duplicates, and folders |
+| `POST /api/ai/chat`       | Ask Gemini how to organize a note or vault |
 
 ## `/api/vault` Response Format
 
@@ -89,6 +97,19 @@ The server broadcasts events automatically when the vault changes:
 { "type": "vault:newFolder",   "path": "/path/to/folder" }
 { "type": "vault:removeFolder","path": "/path/to/folder" }
 ```
+
+## Gemini Organizer
+
+When `GEMINI_API_KEY` is configured, the frontend enables:
+
+- Note-level AI organization inside the side panel
+- Streamed Gemini answers inside the note panel while you ask organization questions
+- AI rewrite drafts with manual apply
+- Suggested tags, links, and target folder
+- Vault-wide audit for missing tags, orphan notes, duplicates, and naming issues
+- Context-aware AI Q&A for the currently opened note
+
+The AI layer is suggestion-first. It does not silently rewrite notes. The frontend requests a draft first, then applies changes only after explicit confirmation.
 
 ## Conversion Rules
 

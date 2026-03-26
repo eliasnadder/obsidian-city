@@ -275,15 +275,96 @@
 
     <!-- ══ NOTE PANEL ════════════════════════════════════════════════ -->
     <div id="note-panel">
+      <div id="np-resize-handle" aria-hidden="true"></div>
       <button class="np-close-btn close" onclick="closePanel()">✕ Close</button>
+      <div class="np-kicker">Building Intel</div>
       <h2 id="np-title"></h2>
+      <div id="np-path" class="np-path">Vault path</div>
+      <div id="np-summary" class="np-summary">Loading note summary...</div>
+      <div class="np-actions">
+        <button class="np-action-btn" type="button" data-panel-action="locate">
+          Locate
+        </button>
+        <button class="np-action-btn" type="button" data-panel-action="enter">
+          Enter
+        </button>
+      </div>
       <div class="np-divider"></div>
       <div id="np-meta" class="meta"></div>
       <div id="np-tags" class="tags"></div>
-      <div id="np-links" class="links">
-        <div class="np-links-title">Outbound Links</div>
+      <div class="np-section">
+        <div class="np-section-head">
+          <div class="np-links-title">Outbound Links</div>
+          <div id="np-links-count" class="np-section-count">0</div>
+        </div>
+        <div id="np-links" class="links"></div>
       </div>
-      <div class="md-content" id="np-content"></div>
+      <div class="np-section" data-section="content">
+        <div class="np-section-head">
+          <div class="np-links-title">Note Content</div>
+          <div class="np-section-actions">
+            <div id="np-content-status" class="np-section-count">Idle</div>
+            <button
+              id="np-expand-btn"
+              class="np-inline-action"
+              type="button"
+              data-panel-action="toggle-expand"
+            >
+              Expand
+            </button>
+          </div>
+        </div>
+        <div class="md-content" id="np-content"></div>
+      </div>
+      <div class="np-section" data-section="ai">
+        <div class="np-section-head">
+          <div class="np-links-title">Gemini Organizer</div>
+          <div id="np-ai-status" class="np-section-count">Checking</div>
+        </div>
+        <div class="np-ai-toolbar">
+          <button
+            id="np-ai-organize-btn"
+            class="np-inline-action"
+            type="button"
+            data-panel-action="ai-organize"
+          >
+            Organize
+          </button>
+          <button
+            id="np-ai-apply-btn"
+            class="np-inline-action"
+            type="button"
+            data-panel-action="ai-apply"
+            disabled
+          >
+            Apply Draft
+          </button>
+        </div>
+        <textarea
+          id="np-ai-objective"
+          class="np-ai-textarea"
+          placeholder="Optional goal: e.g. clean structure, improve Arabic headings, add better tags..."
+        ></textarea>
+        <div class="np-ai-chat-row">
+          <input
+            id="np-ai-question"
+            class="np-ai-input"
+            type="text"
+            placeholder="Ask Gemini how to organize this note..."
+          />
+          <button
+            id="np-ai-ask-btn"
+            class="np-inline-action"
+            type="button"
+            data-panel-action="ai-ask"
+          >
+            Ask
+          </button>
+        </div>
+        <div id="np-ai-results" class="np-ai-results">
+          <div class="np-empty">AI suggestions will appear here for the selected note.</div>
+        </div>
+      </div>
     </div>
 
     <!-- ══ HOVER TOOLTIP ════════════════════════════════════════════ -->
@@ -354,6 +435,24 @@
         <h2>📊 Vault Statistics</h2>
         <div id="stats-body"></div>
         <button class="stats-close-btn" onclick="closeStats()">Close</button>
+      </div>
+    </div>
+
+    <!-- ══ AI AUDIT MODAL ═══════════════════════════════════════════ -->
+    <div id="ai-audit-modal" role="dialog">
+      <div id="ai-audit-content">
+        <div class="ai-modal-header">
+          <h2>✨ Vault Organizer Audit</h2>
+          <div class="ai-modal-actions">
+            <button class="stats-close-btn" onclick="runVaultAudit()">
+              Run Audit
+            </button>
+            <button class="stats-close-btn" onclick="closeVaultAudit()">
+              Close
+            </button>
+          </div>
+        </div>
+        <div id="ai-audit-body"></div>
       </div>
     </div>
 
@@ -597,6 +696,7 @@
 
       <button class="tb-btn" onclick="openCreateNote()">✦ New Note</button>
       <button class="tb-btn" onclick="openStats()">📊 Stats</button>
+      <button class="tb-btn" onclick="openVaultAudit()">✨ AI Audit</button>
       <button class="tb-btn" onclick="takeScreenshot()">📸 Screenshot</button>
 
       <div class="tb-sep"></div>
