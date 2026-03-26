@@ -2,6 +2,7 @@
   "name": "obsidian-city-backend",
   "version": "0.1.0",
   "description": "ObsidianCity3D — Backend API for parsing Obsidian vault into 3D city data",
+  "license": "UNLICENSED",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
